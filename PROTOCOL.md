@@ -517,7 +517,7 @@ sequenceDiagram
 ```
 
 `agentprovider.NewSelfHostedAgent` fixes one HTTPS issuer, top-level Agent
-identifier in that issuer's namespace, and Ed25519 key. Its handler is the
+identifier in that issuer's namespace, and Ed25519 or ES256 key. Its handler is the
 ordinary Agent Provider metadata/JWKS handler, and `Issue` is ordinary current
 Agent-token issuance with that same key as `cnf.jwk`. There is no enrollment or
 refresh endpoint, no alternate token form, and no verifier exception. Core's

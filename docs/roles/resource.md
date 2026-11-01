@@ -74,12 +74,16 @@ fetched.
 issuer's metadata (for an Agent Provider, `/.well-known/aauth-agent.json`),
 then the key set it names, and caches both. It takes:
 
-- `Client`: the `*http.Client` it fetches with.
-- `Clock`: `aauth.SystemClock{}` in a service.
+- `Client`: the `*http.Client` it fetches with. Nil uses a direct client.
+- `Clock`: `aauth.SystemClock{}` in a service. Nil uses the system clock.
 - `Admit`: a function that receives each URL before it is fetched and returns
-  an error to refuse it. Admit only the issuers you have chosen to trust; the
-  token names its own issuer, so without this check any issuer would be
-  fetched.
+  an error to refuse it. Nil uses `signaturekey.AdmitHTTPS`, which admits
+  every HTTPS URL, so the resolver fetches from any issuer at a public
+  address. To fetch only from the issuers you have chosen to trust, admit only
+  those: the token names its own issuer.
+
+So `signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{})` is
+a safe default for issuers on the public internet.
 
 The resolver also checks where each connection goes. By default it resolves
 the host itself and refuses to connect if any address is private, loopback,

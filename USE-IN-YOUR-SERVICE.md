@@ -53,8 +53,11 @@ claim selects that well-known document.
 
 For network discovery, use `signaturekey.NewHTTPKeyResolver`. `Client` is the
 HTTP client it fetches with and `Clock` the protocol time. `Admit` sees each
-metadata or JWKS URL before it is fetched and returns an error to refuse it:
-admit only the issuers you trust, because a token names its own issuer. The
+metadata or JWKS URL before it is fetched and returns an error to refuse it.
+The zero configuration is a safe default: the system clock, a direct client,
+and `signaturekey.AdmitHTTPS`, which admits any HTTPS URL, so the resolver
+fetches the keys of any issuer at a public address. To trust only some
+issuers, admit only those, because a token names its own issuer. The
 resolver also checks each connection itself. It resolves the host, refuses
 private, loopback and link-local addresses, connects only to the address it
 checked, and never follows a redirect. To do that it dials through a copy of
@@ -73,6 +76,14 @@ whose transport is another type or has a proxy or a dialer other than
 [Fetch issuer keys](docs/roles/resource.md#fetch-issuer-keys) compares the
 cases, and [Get started](docs/getting-started.md) runs the last one over
 loopback TLS.
+
+The other calls a server makes to endpoints that metadata named, such as
+revocations, supervision requests and event deliveries, take their own
+`HTTPClient` and `Admit`. `signaturekey.NewEgressClient` returns a client with
+the resolver's connection checks: public addresses only, unless
+`AllowDestination` admits one, no redirects, no cookies, and a timeout. Pass
+it with `signaturekey.AdmitHTTPS`, or with an admitter that names the
+endpoints you trust.
 
 Inside `app`, call `resource.AgentPrincipalFromContext(r.Context())` to get
 the verified Agent identity. Apply your own access policy there. Identity
@@ -217,6 +228,12 @@ a terminal outcome, or `202` with a pending URL under `/revoke/pending/`.
 `agentprovider.RevocationClient` then returns
 `*agentprovider.RevocationPendingError`; revoke again after its `RetryAfter`,
 which records nothing new and continues the cascade.
+
+`TerminateMission` ends a mission for a reason other than completion and
+revokes what was issued under it the same way. The mission store records the
+end atomically (`MissionStore.TerminateMission`) and lists every person and
+auth token it retained under the mission (`MissionStore.LoadMissionTokens`).
+A custom mission store implements both; `storetest.RunMission` checks them.
 
 An Access Server with `accessserver.Config.Revocation` serves `POST /revoke` and
 advertises `revocation_endpoint`. It retains each auth token it issues in
@@ -1223,7 +1240,15 @@ mission reports reach a supervisor in order, before the next request to it,
 after each host step, and when you call `DeliverSupervisionEvents`, for
 example when a supervisor that was offline is reachable again. They include
 an Agent Provider's revocation of an Agent's token, when the Person Server
-also has `AgentTokenRevocations`. While supervision is configured the Person
+also has `AgentTokenRevocations`; a Resource's revocation of a resource token
+the Agent presented, when it has `TokenRevocation`; and the end of a mission
+your host ends with `TerminateMission`, which is delivered at once. An R3
+request goes to the supervisor like any auth-token request:
+`SupervisedR3Artifact` fetches its document so you can show the person its
+display. A four-party request allowed after a wait may then wait for the
+Access Server under the same reference; list it with
+`PendingFederatedAuthorizationReferences` and advance it with
+`AdvanceFederation`. While supervision is configured the Person
 Server also records the missions and tokens of Agents no supervisor decides
 for, so that routing one later replays its active state.
 
@@ -1242,8 +1267,10 @@ request with a decision, a question for the Agent, or a deferral you resolve
 later with `ResolveDecision`; it sees every member the Agent sent, in
 `Request.Extra` for those the request type does not name, and decides again
 when a Person Server relays an updated auth-token request. `Observe` sees every event, including
-`decision.resolved` with the reach the person gave their answer, which your
-policy then applies. With a `SigningKey` the server publishes `jwks_uri` and
+`decision.resolved` with the reach the person gave their answer. The server
+applies a `mission` or `always` answer to the Agent's later acts of the same
+kind before `Decide` (`Kind` sets what the same kind means; `ReachStore`
+keeps the answers); a reach your policy offered is yours to apply. With a `SigningKey` the server publishes `jwks_uri` and
 signs every decision. `RateLimit` turns a Person Server away for a while:
 return a wait of whole seconds and the server answers `429 rate_limited` with
 it as `Retry-After`, recording nothing, so the Person Server sends the request
@@ -1551,7 +1578,8 @@ only use the cache where that cannot happen legitimately.
 ## Verify other Signature-Key schemes
 
 The role handlers accept the Signature-Key schemes their protocol step needs,
-with Ed25519 keys, and answer any other scheme with `unsupported_scheme`. A
+with Ed25519 or ES256 keys, and answer any other scheme with
+`unsupported_scheme`. A
 Resource can also accept clients outside AAuth (see below). An
 endpoint of your own can use the `signaturekey` package directly. Name the
 schemes and algorithms it accepts, then finish with the verifier for the
@@ -1592,13 +1620,14 @@ and `AcceptedSchemes` or `AcceptedAlgorithms` in `Accept-Signature-Scheme` or
 `Accept-Signature-Alg` (see `FormatError`, `FormatAcceptSchemes` and
 `FormatAcceptAlgorithms`).
 
-**Algorithms.** `AcceptedAlgorithms` defaults to Ed25519. An `hwk` or `x509`
-key may also use `ES256`, `ES384`, `RS256` or `PS256` when you list it. Every
-key must carry a fully specified `alg`, and `kty` and `crv` must agree with it.
-A key whose `alg` you did not list is `unsupported_algorithm`, and the error
-names exactly your list. JWT-carried and discovered keys, and AAuth tokens,
-remain Ed25519. A client signs with another algorithm through
-`jose.NewSigningKeyForAlgorithm` and `signaturekey.SignHWKRequest`.
+**Algorithms.** `AcceptedAlgorithms` defaults to Ed25519 and ES256, the two
+algorithms AAuth asks every party to support. An `hwk` or `x509` key may also
+use `ES384`, `RS256` or `PS256` when you list it. Every key must carry a fully
+specified `alg`, and `kty` and `crv` must agree with it. A key whose `alg` you
+did not list is `unsupported_algorithm`, and the error names exactly your list.
+JWT-carried and discovered keys, and AAuth tokens, use Ed25519 or ES256. A
+client signs with another algorithm through `jose.NewSigningKeyForAlgorithm`
+and `signaturekey.SignHWKRequest`.
 
 **Direct JWKS.** In `jwks`, the `url` is both the signer's identity and the
 location of its keys. It is compared byte for byte and never normalized, and
@@ -1646,9 +1675,9 @@ URI, a `jwks_uri` id, a `jwks` URL or an `x5u`) and the verifying key. Such a
 signer is not an AAuth Agent and carries no person or grant. AAuth requests are
 unchanged. Every `Accept-Signature-Scheme` the protected routes send, on an
 unsigned challenge or on `unsupported_scheme`, lists `jwt` and then your
-schemes in your order; `Accept-Signature-Alg` lists Ed25519 and your
+schemes in your order; `Accept-Signature-Alg` lists Ed25519, ES256 and your
 algorithms; an `hwk` or `x509` key may use them, while keys found through
-`jwks`, `jwks_uri` or `jkt-jwt` stay Ed25519. Schemes may be `hwk`, `jkt-jwt`,
+`jwks`, `jwks_uri` or `jkt-jwt` use Ed25519 or ES256. Schemes may be `hwk`, `jkt-jwt`,
 `jwks_uri`, `jwks`, `x509` and `cached`. `x509` needs an `X509` callback that returns the chain, anchors and
 CRLs for an `x5u`. `cached` needs `Cache`, an `AssertionCache`, and `jkt-jwt`:
 the Resource then issues `Signature-Key-Cache` to a `jkt-jwt` client that

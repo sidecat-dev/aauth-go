@@ -114,10 +114,20 @@ func (server *Server) supervise(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	now := server.clock.Now().UTC()
-	result, err := server.decide(ctx, DecisionRequest{
-		PersonServer: personServer, Connection: connection, Request: decoded,
-		Body: append([]byte(nil), body...), Mission: mission,
-	})
+	// The SS applies whatever reach the person gave earlier answers before
+	// its policy (Supervision, Supervision Decisions).
+	standing, err := server.standingDecision(ctx, personServer, decoded, mission)
+	if err != nil {
+		writeProblem(response, supervision.ErrorServerError, err)
+		return
+	}
+	result := DecisionResult{Decision: standing}
+	if standing == nil {
+		result, err = server.decide(ctx, DecisionRequest{
+			PersonServer: personServer, Connection: connection, Request: decoded,
+			Body: append([]byte(nil), body...), Mission: mission,
+		})
+	}
 	if err != nil {
 		writeProblem(response, supervision.ErrorServerError, err)
 		return

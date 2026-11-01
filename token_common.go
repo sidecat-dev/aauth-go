@@ -72,7 +72,7 @@ func (failure *TokenValidationError) SignatureKeyError() *signaturekey.Error {
 		case TokenValidationUnsupportedAlgorithm:
 			return &signaturekey.Error{
 				Code:               signaturekey.ErrorUnsupportedAlgorithm,
-				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
+				AcceptedAlgorithms: jose.TokenAlgorithms(),
 				Cause:              failure,
 			}
 		}
@@ -98,7 +98,7 @@ func (failure *unsupportedTokenAlgorithmError) Error() string {
 func (failure *unsupportedTokenAlgorithmError) SignatureKeyError() *signaturekey.Error {
 	return &signaturekey.Error{
 		Code:               signaturekey.ErrorUnsupportedAlgorithm,
-		AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
+		AcceptedAlgorithms: jose.TokenAlgorithms(),
 		Cause:              failure,
 	}
 }
@@ -264,9 +264,11 @@ func mintToken(key jose.SigningKey, tokenType string, claims any) (string, error
 	return mintTokenPayload(key, tokenType, payload)
 }
 
+// mintTokenPayload signs a token with the key's own algorithm, Ed25519 or
+// ES256.
 func mintTokenPayload(key jose.SigningKey, tokenType string, payload []byte) (string, error) {
 	return jose.SignCompact(key, jose.Header{
-		Algorithm: jose.Ed25519Algorithm,
+		Algorithm: key.Algorithm(),
 		Type:      tokenType,
 		KeyID:     key.ID(),
 	}, payload)
@@ -341,7 +343,7 @@ func verifyResolvedTokenKey(
 	if header.Algorithm == "none" {
 		return jose.VerifiedCompact{}, errors.New("aauth: alg none is forbidden")
 	}
-	if header.Algorithm != jose.Ed25519Algorithm {
+	if !jose.IsTokenAlgorithm(header.Algorithm) {
 		return jose.VerifiedCompact{}, &TokenValidationError{
 			Code:  TokenValidationUnsupportedAlgorithm,
 			Cause: &unsupportedTokenAlgorithmError{algorithm: header.Algorithm},

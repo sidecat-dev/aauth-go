@@ -8,8 +8,8 @@ carried by every Person, Resource and Auth token issued for it, so each
 request can be checked against the mission it serves.
 
 The agent can update the mission as the work goes on, and completes it at the
-end. A completed or expired mission ends: tokens for it are refused with
-`403 mission_terminated`.
+end. A mission ends when it is completed, when it expires, or when your host
+ends it; later requests under it are refused with `403 mission_terminated`.
 
 Terms are defined in [How AAuth works](../how-aauth-works.md).
 
@@ -121,13 +121,31 @@ This library's Person Server answers both at once, unless a supervision
 server decides them; `BeginMissionUpdate` and `BeginMissionCompletion` return
 a request to poll when the answer has to wait.
 
+## Ending a mission
+
+The person, an administrator or the agent's operator may end a mission before
+it is complete. Your host decides who may, authenticates them, and calls
+`TerminateMission` on the Person Server with the mission's agent, its
+`mission_s256` and a reason: `revoked` when someone withdrew it, `superseded`
+when another mission replaces it, `administrative` under local policy, or one
+of your own. From then on every request under the mission gets
+`403 mission_terminated` with that reason. A mission that had already ended
+keeps its first reason, which the result's `Reason` reports.
+
+With `TokenRevocation` configured with `HTTPClient` and `Admit`, the Person
+Server also revokes every unexpired token it issued under the mission, at each
+Resource and Access Server, as `RevokePersonToken` does. When the result's
+`Pending` is true, call `TerminateMission` again after its `RetryAfter`. A
+supervision server deciding for the agent is told the mission ended.
+
 ## Limits
 
 From [CONFORMANCE.md](../../CONFORMANCE.md): the Person Server can hold a
 proposal for the person, but not an update or a completion. Its own
-clarification questions about a mission, mission revocation, and
-mission-bound requests a parent agent makes for a sub-agent are not
-implemented.
+clarification questions about a mission, and mission-bound requests a parent
+agent makes for a sub-agent, are not implemented. Ending a mission is a Go
+call; the draft leaves its HTTP endpoint (`mission_control_endpoint`) to a
+companion specification.
 
 ## Next
 

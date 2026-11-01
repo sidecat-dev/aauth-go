@@ -294,14 +294,15 @@ func (client *Client) Poll(ctx context.Context, supervisor string, request Reque
 	return client.supervisionAnswer(ctx, outcome, response, metadata, request, location)
 }
 
-// AnswerClarification relays the Agent's answer to an SS clarification with a
-// signed POST to the pending URL. The SS answers it as it answers a poll.
-func (client *Client) AnswerClarification(ctx context.Context, supervisor string, request Request, location, answer string) (Outcome, error) {
+// AnswerClarification relays the Agent's answer to an SS clarification, its
+// Markdown answer or its updated auth-token request, with a signed POST to the
+// pending URL. The SS answers it as it answers a poll.
+func (client *Client) AnswerClarification(ctx context.Context, supervisor string, request Request, location string, answer ClarificationResponse) (Outcome, error) {
 	metadata, err := client.Metadata(ctx, supervisor)
 	if err != nil {
 		return Outcome{}, err
 	}
-	body, err := ClarificationResponse{Answer: answer}.Encode()
+	body, err := answer.Encode()
 	if err != nil {
 		return Outcome{}, err
 	}

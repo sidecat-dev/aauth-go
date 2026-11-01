@@ -297,17 +297,47 @@ allowed outcome. Mission actions are sent once and have no lost-success
 recovery identity. These gaps are recorded in
 [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
-## Mission termination closes PS decisions, not outstanding tokens
+## A completed mission closes PS decisions; a mission the host ends revokes its tokens
 
-**Source:** AAuth Core, `Mission Management`, `Mission Status Errors`, and `Why
-Missions Are Not a Policy Language`.
+**Source:** Protocol `70d6737`, Mission Management (lines 1512-1530), Mission
+Completion, and Revocation Cascade ("PS revokes a mission", line 2754; "PS
+terminates access it federated", line 2751; Records, line 2758).
 
-After completion, the implementation rejects later mission actions, Person
-token issuance, and Auth-token exchange at the PS. It does not revoke already
-issued credentials: the Resource receives only `mission_s256`, has no mission
-state channel, and continues to apply the credential's own expiry. The Agent
-must stop using a terminated mission. Core does not define a stronger
-termination-propagation mechanism.
+After completion or expiry the Person Server refuses later mission actions,
+person-token issuance and auth-token exchange under the mission, and revokes
+nothing already issued: the cascade names only a mission the PS revokes. A
+mission the host ends with `TerminateMission` cascades, for every reason it
+accepts. The cascade item is written for `revoked`; the library applies it to
+`superseded`, `administrative` and host reasons too, because each ends the
+mission on someone's decision, and a token under a mission the PS refuses
+everything for should not keep working at a Resource. "SHOULD revoke
+outstanding auth tokens issued under the mission" is read as revoking each
+unexpired person token through the person-token cascade, and each auth token
+the PS issued at its Resource. In four-party access the PS reaches an Access
+Server's auth tokens only by revoking the person token it presented (line
+2751), and a person token left valid would still open a Resource that accepts
+it directly. The tokens come from the Person Server's own mission records,
+read after the store made the termination atomic, so none can be committed
+under the mission after the list is read.
+
+**Evidence:** `integration/mission_termination_test.go:TestTerminatedMissionRevokesWhatWasIssuedUnderIt`.
+
+## The first termination reason stands; `completed` and `expired` are not host reasons
+
+**Source:** Protocol `70d6737`, Mission Management (lines 1516, 1518 and
+1528).
+
+Ending a mission that has already ended keeps its reason, returns it, and
+still runs the cascade. A reason "MUST NOT be ... used to permit a later
+transition" (line 1528), and rewriting it would make the record of why a
+mission ended changeable. The list is open (line 1518), so the host may pass
+any 1 to 256 bytes of UTF-8 except `completed`, which only the person's
+acceptance at the mission endpoint records with its evidence, and `expired`,
+which the store records at `expires_at`. 256 bytes is the bound of a
+`terminated` report, as in aauth-rust.
+
+**Evidence:** `personserver/storetest/mission.go` (`RunMission`),
+`integration/mission_termination_test.go`.
 
 ## Missing deferred `Retry-After` uses the stated five-second fallback
 
@@ -2155,17 +2185,19 @@ this check refuses only identifiers no Agent Provider may assign.
 ## Request-key algorithms are an endpoint choice
 
 **Source:** Signature-Key `69f5ba2`, Algorithm Determination, Header Web Key
-(hwk), Algorithm Selection, and `unsupported_algorithm`.
+(hwk), Algorithm Selection, and `unsupported_algorithm`; Protocol `70d6737`,
+Signature Algorithms (line 2166).
 
 The draft requires a verifier to refuse an `alg` it does not support with
 `unsupported_algorithm`, and `Accept-Signature-Alg` to state exactly the set
 it accepts. It does not say whether that set belongs to the library or to
 each endpoint. `VerifyOptions.AcceptedAlgorithms` makes it the endpoint's
-choice and defaults to Ed25519, so existing roles keep their Ed25519 profile.
-An `hwk` or `x509` key may use `ES256`, `ES384`, `RS256` or `PS256` when the
+choice and defaults to Ed25519 and ES256, the two "every party MUST support"
+and "SHOULD support" (Protocol line 2166), so every role accepts both. An
+`hwk` or `x509` key may also use `ES384`, `RS256` or `PS256` when the
 endpoint lists it, and every `unsupported_algorithm` from a prepared request
 names exactly that list. The `jwt`, `jkt-jwt`, `self-jwt`, `jwks` and
-`jwks_uri` keys, AAuth tokens, and compact JWS remain Ed25519. `RS256` and
+`jwks_uri` keys, AAuth tokens, and compact JWS use Ed25519 or ES256. `RS256` and
 `PS256` keys need a 2048- to 8192-bit modulus and an odd exponent no larger
 than 2^31-1. `PS256` uses a salt as long as the hash. An `hwk` member refuses
 `kid`, private members and members of another key type, checking them before
@@ -2956,10 +2988,11 @@ interaction selectors or the four-party Budget `Ceiling`. `BindPerson` still
 runs after an allow, because it resolves the person's directed identity for a
 Resource, which is the Person Server's job; it must not apply consent. An
 allow without narrowing grants a Resource's Budget offer as offered: the
-supervisor saw it in the resource token. An R3 authorization and a
-Resource-initiated interaction are refused with `SupervisionCompositionError`
-(500 `server_error`) rather than decided locally, because this implementation
-cannot put them to a supervisor.
+supervisor saw it in the resource token. R3 authorizations are no exception:
+`DirectR3Config.AuthorizeDocument` and `R3Config.ConsentDocument` and
+`ConsentProposal` are not called either. A Resource-initiated interaction is
+refused with `SupervisionCompositionError` (500 `server_error`), because the
+Resource's flow comes before consent and cannot be put to a supervisor.
 
 **Evidence:** every test in `integration/supervision_test.go` fails if a
 Person Server policy decides for a routed Agent.
@@ -2982,8 +3015,15 @@ A supervisor that defers is polled by the host with `AdvanceSupervision`, as
 an Access Server continuation is; the Agent's polls only observe retained
 state.
 
+The pending URL answers only the Agent identity and key that made the
+request: another receives `403 wrong_poller`, as at the federation waits and
+in aauth-rust; an unknown or finished reference `410 invalid_code`. A
+withdrawal answers `200 {"status":"cancelled"}`, as every other wait this
+library hosts does.
+
 **Evidence:** `TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions`,
-`TestUnavailableSupervisorLeavesTheDecisionToThePerson`.
+`TestUnavailableSupervisorLeavesTheDecisionToThePerson`,
+`integration/supervision_wire_test.go:TestSupervisedPendingURLAndDenialsAsTheAgentSeesThem`.
 
 ## A supervised request allowed later is served again as it was made
 
@@ -2998,13 +3038,21 @@ they were first verified, and every lifetime, revocation, binding and mission
 check runs again at the time of issuance. Tokens are issued at that time. The
 response the Agent would have received is kept for its next poll. A deny ends
 the request with the polling error `denied`, except a permission request,
-whose answer is the denial with the supervisor's reason. A four-party request
-that already waited for its supervisor cannot then wait for the Access Server:
-the Agent polls one pending URL, so that combination ends with
-`DeferredCompositionError` reason `supervision`.
+whose answer is the denial with its reason. The reason is passed "where the
+protocol gives the agent a reason" (Supervision line 265) and with a mission
+proposal's denial (line 424): a mission request's denial, immediate or
+polled, carries it in `reason`; a token request's carries none. Immediate
+denials keep the Core codes the Person Server's own policy answers.
+
+A four-party request completed this way may then wait for the Access Server
+under the supervised request's own reference. The Agent keeps polling and can
+cancel at `/pending/{id}`, answered from the wait with the same `Location`.
+The host advances it with `AdvanceFederation`. The request is
+`SupervisedWithAccessServer` until the wait answers terminally.
 
 **Evidence:** `TestUnavailableSupervisorLeavesTheDecisionToThePerson`,
-`TestSupervisorClarifiesThroughThePersonServer`.
+`TestSupervisorClarifiesThroughThePersonServer`,
+`integration/supervision_four_party_test.go:TestFourPartySupervisedRequestWaitsForTheAccessServer`.
 
 ## An unreachable supervisor is not retried within the act
 
@@ -3059,17 +3107,27 @@ applies the same rule at the recorded receipt time.
 **Evidence:** `TestSignedSupervisorDecisionsAreAVerifiableRecord`,
 `supervisionserver/server_test.go`.
 
-## A four-party narrowing is enforced when the token is delivered
+## A four-party narrowing travels to the Access Server as `scope` and `exp`
 
-**Source:** AAuth Supervision, `Auth Token`.
+**Source:** Supervision `70d6737`, Auth Token (line 508); Protocol
+`70d6737`, PS-to-AS Token Request (lines 1581-1589), line 1653 and line 2476;
+Budgets, line 258.
 
-An allow may narrow `scope` and bound `exp`, and "how a PS narrows a federated
-request is the AS's business". The PS-to-AS request in this implementation
-carries no scope, so the Person Server checks the Access Server's token on
-delivery and refuses one broader than the supervisor allowed with
-`403 access_denied`.
+The PS "passes them to the AS it federates with where the AS accepts them",
+and Core defines no such member (Budgets lists scope on that hop as n/a). The
+Person Server adds `scope`, sent only when narrower than the resource token's,
+and `exp`, sent whenever the allow has one. Neither is sent otherwise, so an
+Access Server that does not know them never sees them. This Access Server
+treats `scope` as the requested scope and ends the token and any wait by
+`exp`. It answers `400 invalid_request` to an empty or malformed `scope`, one
+outside the resource token's, or an `exp` not after the request. An Access
+Server may ignore unknown members (line 2476), so delivery still refuses a
+broader token with `403 access_denied` (line 1653). aauth-rust's Access Server
+refuses unknown members with `400 invalid_request`, which the Person Server
+relays.
 
-**Evidence:** `TestFourPartySupervisorDecidesAndThePersonServerEnforcesIt`.
+**Evidence:** `accessserver/narrowing_test.go:TestServerAppliesThePersonServersNarrowing`,
+`integration/supervision_four_party_test.go`.
 
 ## Which supervisor origins a Person Server contacts is egress policy
 
@@ -3097,15 +3155,17 @@ reported terminated its `approved` report and events, and the issued events
 of tokens still outstanding. While supervision is configured, the Person
 Server also records the approvals, terminations and issued tokens of Agents
 no supervisor decides for, under an `sdi` it mints, so the first time such an
-Agent is routed its active state is replayed the same way. An accepted mission
+Agent is routed its active state is replayed the same way, with its
+mission-bound audit records and interaction requests. An accepted mission
 update has no event or report form, so it is not replayed. A mission approved
 before supervision was configured has no record; after `unknown_mission`, to
 a request or to an event, the Person Server builds its `approved` report from
 the mission store under a fresh `sdi` and sends it before trying again.
 `agent.bound` is sent the first time an Agent is routed, since this Person
-Server binds an Agent implicitly rather than at one approval. An Agent token
-an Agent Provider revokes is reported as `revocation.received` to the
-supervisor that decides for the Agent that presented it.
+Server binds an Agent implicitly rather than at one approval. An Agent token an Agent
+Provider revokes, and a resource token a Resource withdraws, is reported as
+`revocation.received` to the supervisor that decides for the Agent that
+presented it.
 
 **Evidence:** `TestAgentsOfOnePersonGoToTheirOwnSupervisors`,
 `TestUnknownMissionIsReplayedBeforeTheSupervisorDecides`.
@@ -3117,8 +3177,11 @@ supervisor that decides for the Agent that presented it.
 Missions expire lazily in this implementation: the store materializes expiry
 when it loads one. The Person Server reports `terminated` to the Agent's last
 deciding supervisor when it finds a mission terminated for any reason, and
-after a completion it allowed, under the completion's `sdi`. It checks its
-record first, so a mission found ended more than once is reported once.
+after a completion it allowed, under the completion's `sdi`. It also reports
+`terminated` when the host ends a mission with `TerminateMission`, at once,
+with the host's reason and no `sdi`, since no supervision decision ended it
+(Supervision, Terminated, line 458). It checks its record first, so a mission
+found ended more than once is reported once.
 
 **Evidence:** `TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions`.
 
@@ -3136,23 +3199,39 @@ keeps it for the host's own presentation.
 
 **Evidence:** `supervision.Request`, `TestRequestsRoundTripThroughTheirEndpoints`.
 
-## Supervised clarification allows five rounds and no replacement request
+## Supervised clarification allows five rounds and relays an updated request
 
-**Source:** AAuth Supervision, `Clarification`; Core, `Clarification Limits`
-and `Agent Response to Clarification`.
+**Source:** AAuth Supervision, `Clarification` (line 310); Core,
+`Clarification Limits` and `Agent Response to Clarification` (lines 1081 and
+1117).
 
 The Person Server enforces one limit of five rounds per supervised request,
 counting the supervisor's questions and the person's own, as the draft
 recommends. Beyond it the supervisor is treated as unavailable and the person
 decides. Core carries no round identifier in an answer (AAG-F095), so a
 delayed repeat of an earlier answer is taken as the answer to the question
-open when it arrives. The Person Server refuses the Agent's `updated_request`
-with `400`: it completes the Agent's retained signed request, whose tokens a
-replacement cannot change, so a different request is made afresh. The
-supervision server accepts an `updated_request` from a Person Server that
-relays one, and decides again on its tokens.
+open when it arrives.
 
-**Evidence:** `TestSupervisorClarifiesThroughThePersonServer`.
+The PS relays "`clarification_response` or `updated_request`" (line 310).
+Before relaying an updated auth-token request, the Person Server verifies the
+pair as at its token endpoint, with the same errors (Core line 1117), requires
+the same `iss`, `ps`, `sub`, `agent_jkt`, `mission_s256` and `tenant`, and
+both tokens to last as long as the request may wait. It keeps the Agent's
+signed `updated_request`; the supervision request under the `sdi` is
+unchanged, so a resend repeats it. Review and the check of an allow use the
+updated tokens, and completion verifies the kept request again as made and
+issues from its tokens. The new resource token is indexed to the Agent, so
+its revocation reaches the supervisor. The update stands once the supervisor
+answered it, or when it could not be reached and the person decides; one it
+did not take (for example `rate_limited`) is dropped and the question asked
+again. Two updates are refused `400`: one answering the person's own
+question, since the supervisor would not learn of it, and one that brings an
+R3 document or a Resource interaction, which replacing in place is not built
+for. The supervision server accepts an `updated_request` and decides again on
+its tokens.
+
+**Evidence:** `TestSupervisorClarifiesThroughThePersonServer`,
+`integration/supervision_wire_test.go:TestSupervisorDecidesOnTheAgentsUpdatedRequest`.
 
 ## A supervision server repeats each terminal answer byte for byte
 
@@ -3167,7 +3246,11 @@ If the first answer went out on a poll and the POST is repeated later, it
 signs that decision once as a response to the POST and repeats that. Polls of
 a decided pending URL keep returning the decision rather than `410`, because
 the Person Server may not have received the first. A repeat under an `sdi`
-whose request differs is `invalid_request`.
+whose request differs is `invalid_request`. This reads "the same signed
+response" (Supervision line 316) literally for every repeat. A decision first
+sent on a poll is bound to the GET (line 340), so the first repeat of the POST
+is signed once for it, and later repeats get those bytes. aauth-rust signs
+each repeat afresh; both verify the same way.
 
 **Evidence:** `supervisionserver/server_test.go`.
 
@@ -3191,3 +3274,151 @@ the Core polling codes, in which `429` is `slow_down`. aauth-rust exports a
 wire.
 
 **Evidence:** `supervisionserver/server_test.go:TestRateLimitAnswersRateLimitedWithRetryAfter`.
+
+## AAuth tokens and the keys they name use Ed25519 or ES256
+
+**Source:** Protocol `70d6737`, Signature Algorithms (lines 2166-2175) and
+JWT `alg` (line 2298); Events, token `alg` (lines 216 and 355);
+Signature-Key `69f5ba2`, jkt-jwt (lines 377-408).
+
+"Every party MUST support `Ed25519` ... and SHOULD support `ES256`", and ES256
+is "RECOMMENDED where a platform's keys are ECDSA on P-256, such as
+hardware-backed keys". The library reads "every key AAuth conveys or
+references" to include the keys that sign agent, person, Resource, auth and
+event tokens, the jkt-jwt and self-jwt assertions, and the confirmation keys
+in `cnf`. Each may be Ed25519 or ES256. A token's protected `alg` is its
+signing key's `alg`, and a token verifies only with a key whose `alg` equals
+it, so one key is never read under two algorithms. An ES256 signature is the
+JWS form R || S, 64 bytes. ES384, RS256 and PS256 remain request-signing
+algorithms an endpoint may list for `hwk` and `x509` keys, not token
+algorithms: the protocol names only the two. Ed25519 stays the default key in
+the examples and guides.
+
+**Evidence:** `jose/signature_algorithms_external_test.go:TestCompactJWSUsesTheKeysOwnAlgorithm`,
+`integration/three_party_authorization_test.go` and
+`integration/core_four_party_test.go` (Ed25519, ES256 and mixed key
+profiles), `signaturekey/jkt_jwt_external_test.go:TestJKTJWTAcceptsAnES256DurableKey`.
+
+## A zero discovery configuration fetches from any issuer at a public HTTPS address
+
+**Source:** Signature-Key `69f5ba2`, Scheme-Specific Risks (egress); Protocol
+`70d6737`, Metadata Documents.
+
+The draft requires a verifier to refuse private, loopback and link-local
+destinations unless deployment configuration allows them, and to pin the
+address it checked. It leaves which issuers to fetch from to the verifier. A
+zero `HTTPKeyResolverConfig` selects the system clock, a direct client and
+`AdmitHTTPS`, which admits every absolute HTTPS URL without userinfo or
+fragment: the resolver's own connection checks then confine discovery to
+public addresses, it follows no redirect, and it gives up after ten seconds.
+Trust in a token's issuer stays a role decision made on the verified claims,
+and a host that contacts only issuers it trusts still supplies `Admit`.
+`AdmitHTTPS` is safe only over a client that checks each connection, which is
+why `NewEgressClient` exists for a server's other outbound calls; those calls
+keep an explicit `HTTPClient` and `Admit`.
+
+**Evidence:** `signaturekey/egress_external_test.go:TestDefaultDiscoveryAndEgressClientsReachPublicAddressesOnly`.
+
+## A signed decision names its key in `keyid`; problem bodies carry no `title`
+
+**Source:** Supervision `70d6737`, Signed Decisions (lines 328-330);
+Signature-Key `69f5ba2`, Relationship to Accept-Signature (line 807);
+Protocol `70d6737`, keyid (line 2238) and Error Response Format (line 2578).
+
+The draft's signed-decision example carries `keyid`, and aauth-rust writes
+it; the draft is otherwise silent, so the supervision server writes the key's
+`kid` as `keyid` after `created`. A signer that includes `keyid` for a label
+in `Signature-Key` must name the same key there, which signing checks, and a
+verifier takes the key from `Signature-Key`. Agents still send no `keyid`
+(line 2238). Problem bodies carry `status`, `error` and `detail`, and `type`
+only for a signature failure; `title` is a MAY (line 2578), Go's problem
+format predates the supervision feature, and adding it would change every
+Agent-facing body for no draft reason.
+
+**Evidence:** `supervisionserver/server_test.go` (`requireSameResponse`).
+
+## A resource token's revocation reaches the supervisor of the Agent that presented it
+
+**Source:** Supervision `70d6737`, Event Endpoint (line 545) and Envelope
+(line 201).
+
+The draft names `token_type` but no values; the library sends `agent_token`
+and `resource_token`, the protocol's parameter names for those tokens,
+matching aauth-rust's `agent_token`. `iss` is the Resource. The Person Server
+learns which Agent presented a resource token when that Agent's auth-token
+request, or its `updated_request`, is put to its supervisor, and keeps the
+index until the token's `exp` plus clock skew; a token presented by an Agent
+no supervisor decides for has no supervisor to tell. The event carries no
+`mission_s256`, even for a mission-bound resource token: it reports what the
+Person Server received, not an act under the mission. Like the Agent-token
+event it is queued at once and delivered in order with the next delivery.
+
+**Evidence:** `integration/mission_termination_test.go:TestSupervisorIsToldOfAHostEndedMissionAndAWithdrawnResourceToken`.
+
+## A supervised R3 authorization grants the document as the Resource described it
+
+**Source:** Supervision `70d6737`, lines 75, 79, 462, 504 and 508; R3
+`70d6737`, lines 448, 536, 617, 631 and 734.
+
+An R3 request is an `auth_token` act whose resource token carries `r3_uri`
+and `r3_s256` among "any budget or other requirement the resource attached"
+(Supervision line 504). An allow can narrow only `scope` and `exp` (line 508).
+The issuer splitting `r3_granted` from `r3_per_call` is "its own policy" (R3
+line 631), which for a supervised Agent would be the Person Server deciding
+(Supervision line 79). So in three-party access an allow grants every
+operation of the document outright, within the narrowed scope and `exp`; in
+four-party access the Access Server evaluates the operations. The supervisor
+cannot fetch the document (R3 lines 448 and 734), so "the SS sees what the PS
+saw" (line 462) does not hold for R3, and the Person Server does not forward a
+document the Resource restricted to the Access Server and Person Server.
+`SupervisedR3Artifact` lets the host show the person its `display` (R3 line
+536).
+
+**Evidence:** `integration/supervision_r3_test.go:TestSupervisorDecidesAnR3Authorization`,
+`integration/supervision_four_party_test.go:TestFourPartySupervisorDecidesAnR3Authorization`.
+
+## A deferred federated grant is reported once, under the supervisor's decision
+
+**Source:** Supervision `70d6737`, sdi (line 207) and the event table (line
+540).
+
+The wait keeps the allow (`FederatedAuthorizationRecord.Supervision`, which
+stores must keep immutable). A later grant is checked against it and reported
+under its `sdi` to the supervisor that decided. A deferred grant is verified
+at the host's advance and again on release, and reported only on release.
+
+**Evidence:** `integration/supervision_four_party_test.go:TestFourPartySupervisedRequestWaitsForTheAccessServer`.
+
+## `interaction.requested` reports each interaction the Person Server relayed
+
+**Source:** Supervision `70d6737`, lines 543, 547, 619 and 735; Protocol
+`70d6737`, lines 1129 and 1181.
+
+The event is sent when the interaction endpoint answers `200` or `202`, for
+type `interaction`, `payment` or `question`; `url` is absent for a question
+and the code is never forwarded. Because Core keeps interactions in the
+mission log (line 1181) and replay sends "the mission's log entries" (line
+619), a mission-bound interaction or audit record of an unrouted Agent is
+recorded and replayed when it is first routed. A missionless one is not.
+
+**Evidence:** `integration/supervision_interaction_test.go:TestRelayedInteractionsReachTheSupervisor`.
+
+## A supervision server applies the reach of the person's answers
+
+**Source:** Supervision `70d6737`, lines 282 and 580-605.
+
+"The SS remembers and applies it to later acts", with `once`, `mission` and
+`always` of fixed meaning and "this kind" the supervisor's to define. The
+server records an allow or deny given with `mission` or `always` in
+`decision.resolved`, for a decision it holds, and applies the latest matching
+one before `Decide`: under the same mission while it is active, or under any
+mission or none. Reach covers person-token, auth-token, permission and
+mission-update acts; an allow carries no terms a proposal needs, and only the
+person accepts a completion. The kind is the act with its resource (a person
+token's `resource`, the resource token's `iss`) or a permission's `action`;
+`Config.Kind` replaces it. A `terminated` report ends a mission's answers.
+`once`, a reach the policy offered, and an answer about an act the server
+never decided (supervisor unavailable) are left to the policy through
+`Observe`. This matches aauth-rust.
+
+**Evidence:** `supervisionserver/reach_test.go:TestStandingAnswersDecideLaterActsOfTheSameKind`.

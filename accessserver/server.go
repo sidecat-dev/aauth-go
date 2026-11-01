@@ -70,8 +70,10 @@ type AuthorizationRequest struct {
 	Tenant       string
 	Account      *string
 	MissionS256  string
-	Scopes       []string
-	Agent        Agent
+	// Scopes are the Core scopes requested: the resource token's, or the
+	// narrower scope the Person Server's request named.
+	Scopes []string
+	Agent  Agent
 	// Subagent is present only for a parent-mediated request. Agent remains
 	// the top-level parent whose grant the policy evaluates.
 	Subagent *Agent
@@ -235,6 +237,8 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		SubagentToken  json.RawMessage `json:"subagent_token"`
 		UpstreamToken  json.RawMessage `json:"upstream_token"`
 		Budget         json.RawMessage `json:"budget"`
+		Scope          json.RawMessage `json:"scope"`
+		ExpiresAt      json.RawMessage `json:"exp"`
 	}
 	if err := decodeJSON(bytes.NewReader(encoded), &input); err != nil || input.ResourceToken == "" || input.AgentToken == "" {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
@@ -393,6 +397,19 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 	} else if r3Context == nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token has no authorization claim"))
 		return
+	}
+	// A Person Server passes on a narrowing its supervisor's allow made: the
+	// grant stays within that scope, and the token and any wait end by exp.
+	narrowedScopes, narrowedExpiresAt, err := decodeNarrowing(input.Scope, input.ExpiresAt, requestedScopes, proof.VerifiedAt())
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	if narrowedScopes != nil {
+		requestedScopes = narrowedScopes
+	}
+	if !narrowedExpiresAt.IsZero() && narrowedExpiresAt.Before(credentialExpiresAt) {
+		credentialExpiresAt = narrowedExpiresAt
 	}
 	policyRequest := AuthorizationRequest{
 		PersonServer: personServer,
@@ -601,6 +618,38 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
 	}{AuthToken: authToken, ExpiresIn: claims.ExpiresAt - claims.IssuedAt})
+}
+
+// decodeNarrowing reads the optional scope and exp members of a PS-to-AS
+// token request. scope must name a nonempty subset of the scopes the resource
+// token requested; exp must be a later NumericDate than now.
+func decodeNarrowing(rawScope, rawExpiresAt json.RawMessage, requested []string, now time.Time) ([]string, time.Time, error) {
+	var narrowed []string
+	if rawScope != nil {
+		var scope string
+		if err := json.Unmarshal(rawScope, &scope); err != nil || scope == "" {
+			return nil, time.Time{}, errors.New("accessserver: scope must be a nonempty string")
+		}
+		parsed, err := aauth.ParseScope(scope)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("accessserver: scope: %w", err)
+		}
+		for _, value := range parsed {
+			if !slices.Contains(requested, value) {
+				return nil, time.Time{}, errors.New("accessserver: scope is not within the resource token's scope")
+			}
+		}
+		narrowed = parsed
+	}
+	var expiresAt time.Time
+	if rawExpiresAt != nil {
+		var seconds int64
+		if err := json.Unmarshal(rawExpiresAt, &seconds); err != nil || seconds <= now.Unix() {
+			return nil, time.Time{}, errors.New("accessserver: exp must be a NumericDate after the request")
+		}
+		expiresAt = time.Unix(seconds, 0).UTC()
+	}
+	return narrowed, expiresAt, nil
 }
 
 func cloneStringPointer(value *string) *string {

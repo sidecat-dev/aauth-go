@@ -11,9 +11,11 @@ import (
 
 // Observation is one event or mission report the SS is about to
 // acknowledge; exactly one of Event and Report is set. Body is the exact
-// request body. A standing policy learns from it: a decision.resolved event
-// carries what the person decided after an ask and the reach, apply, they
-// gave their answer, which the SS then applies to later acts.
+// request body. A policy learns from it: a decision.resolved event carries
+// what the person decided after an ask and the reach, apply, they gave their
+// answer. The SS has already recorded a mission or always reach, which it
+// applies to later acts itself; a reach the policy offered is the policy's to
+// apply.
 type Observation struct {
 	Connection Connection
 	Event      *supervision.Event
@@ -48,7 +50,13 @@ func (server *Server) handleEvent(response http.ResponseWriter, request *http.Re
 			return
 		}
 	}
-	server.deliver(response, request, connection, event.ID, body, nil, Observation{Event: &event})
+	var apply func(context.Context, time.Time) error
+	if event.Name == supervision.EventDecisionResolved {
+		apply = func(ctx context.Context, now time.Time) error {
+			return server.rememberReach(ctx, personServer, event, now)
+		}
+	}
+	server.deliver(response, request, connection, event.ID, body, apply, Observation{Event: &event})
 }
 
 // handleReport records an approved mission's exact blob, or marks a mission
@@ -68,10 +76,11 @@ func (server *Server) handleReport(response http.ResponseWriter, request *http.R
 			})
 		}
 		err := server.store.TerminateMission(ctx, personServer, report.Subject, report.MissionS256, report.Reason, now)
-		if errors.Is(err, ErrNotFound) {
-			return nil
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
 		}
-		return err
+		// Answers given for the rest of the mission end with it.
+		return server.store.ForgetMissionAnswers(ctx, personServer, report.Subject, report.MissionS256)
 	}
 	server.deliver(response, request, connection, report.ID, body, apply, Observation{Report: &report})
 }

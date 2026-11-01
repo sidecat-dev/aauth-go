@@ -15,7 +15,7 @@ agent's supervision server and applies the answer:
 If the supervisor cannot be reached, the request waits for the person too.
 
 The requests supervised are mission proposals, updates and completions,
-Person and Auth token requests, and permission requests. The
+Person and Auth token requests, R3 ones included, and permission requests. The
 [Supervision Server](../roles/supervision-server.md) guide covers the
 supervisor's side; this page covers the Person Server's.
 
@@ -137,7 +137,16 @@ A request that waits answers the agent `202` with `requirement=approval` and a
 pending URL, `/pending/{id}` on the Person Server. The agent polls it with the
 `Pending` value its method returned. A clarification from the supervisor
 arrives as `requirement=clarification`, and the agent answers it the same way
-as a Person Server's own question.
+as a Person Server's own question, or, for an Auth token request, with an
+updated request: a new resource token and the token presented for it. The
+Person Server checks the new tokens, passes them to the supervisor, and issues
+from them if it allows. Only the agent that made the request can poll it;
+another gets `403 wrong_poller`. A denied mission request carries the
+supervisor's or the person's `reason`.
+
+In four-party access, a narrowing allow is sent to the Access Server as
+`scope` and `exp`; this library's Access Server applies them, and the Person
+Server refuses a broader token from one that does not.
 
 On the host:
 
@@ -145,18 +154,26 @@ On the host:
   `ReviewSupervision` loads one. Authenticate the person before you show it.
 - `ResolveSupervision` records the person's answer and its reach: `once`, the
   rest of the `mission`, `always`, or a value the supervisor offered. The
-  supervisor remembers the reach; the Person Server applies none itself.
+  supervisor remembers the reach and applies it; the Person Server applies
+  none itself.
 - `AskSupervisedAgent` lets the person question the agent first.
 - `AdvanceSupervision` checks again on a request the supervisor deferred.
 - `ConnectSupervisor` connects a person to a supervisor ahead of the first
   request, and `DeliverSupervisionEvents` sends the events held while the
   supervisor was unreachable.
+- `SupervisedR3Artifact` fetches the R3 document an Auth token request names,
+  so you can show the person its display; the supervisor cannot fetch it.
+- A four-party request allowed after a wait may then wait for the Access
+  Server under the same reference: find it with
+  `PendingFederatedAuthorizationReferences` and advance it with
+  `AdvanceFederation`. The agent keeps polling the same URL.
 
 ## Reports and records
 
 The Person Server tells the supervisor what happened, as events in order for
 each person: tokens issued, decisions resolved, missions approved and
-terminated, audit records, interactions, and Agent tokens revoked.
+terminated, including those your host ends, audit records, interactions, and
+Agent and resource tokens revoked.
 
 Decisions are signed by the supervisor, and the Person Server refuses unsigned
 ones unless you set `AllowUnsignedDecisions`. It keeps each signed decision in
@@ -164,13 +181,12 @@ its log, and `supervision.VerifyExchange` checks one again later.
 
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md): R3 and Resource-initiated
-interaction for a supervised agent are refused with a
-`SupervisionCompositionError`. A four-party supervised request that would also
-have to wait for the Access Server is refused. Telling the supervisor of a
-revoked Resource token, and passing an agent's updated request to it, are not
-implemented. The stores in `testutil` are in memory, and no other
-implementation has been run against these roles.
+From [CONFORMANCE.md](../../CONFORMANCE.md): Resource-initiated interaction
+for a supervised agent is refused with a `SupervisionCompositionError`. An
+updated request that answers the person's own question, or that brings an R3
+document, is refused. The supervisor sees an R3 document only by reference.
+The stores in `testutil` are in memory, and no other implementation has been
+run against these roles.
 
 ## Next
 

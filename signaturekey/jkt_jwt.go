@@ -46,9 +46,11 @@ func (delegation JKTJWTDelegation) ConfirmationKey() jose.JWK { return delegatio
 // Compact returns the exact verified compact assertion.
 func (delegation JKTJWTDelegation) Compact() string { return delegation.compact }
 
-// MintJKTJWT creates the Ed25519 and SHA-256 profile of a self-issued
-// Signature-Key delegation. The identity key signs only this assertion; the
-// delegated confirmation key signs the accompanying HTTP request.
+// MintJKTJWT creates the SHA-256 profile of a self-issued Signature-Key
+// delegation. The identity key, Ed25519 or ES256 as a secure enclave's
+// durable key may need, signs only this assertion under its own algorithm;
+// the delegated confirmation key, Ed25519 or ES256, signs the accompanying
+// HTTP request.
 func MintJKTJWT(
 	identityKey jose.SigningKey,
 	confirmationKey jose.JWK,
@@ -83,7 +85,7 @@ func MintJKTJWT(
 		Type      string   `json:"typ"`
 		JWK       jose.JWK `json:"jwk"`
 	}{
-		Algorithm: jose.Ed25519Algorithm,
+		Algorithm: identityKey.Algorithm(),
 		Type:      JKTJWTTypeSHA256,
 		JWK:       identity,
 	})
@@ -148,10 +150,10 @@ func (prepared PreparedRequest) VerifyJKTJWT() (VerifiedRequest, JKTJWTDelegatio
 			fmt.Errorf("aauth: unsupported jkt-jwt type %q", protected.Type),
 		)
 	}
-	if protected.Algorithm != jose.Ed25519Algorithm {
+	if !jose.IsTokenAlgorithm(protected.Algorithm) {
 		return VerifiedRequest{}, delegation, &Error{
 			Code:               ErrorUnsupportedAlgorithm,
-			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
+			AcceptedAlgorithms: jose.TokenAlgorithms(),
 			Cause:              fmt.Errorf("aauth: unsupported jkt-jwt algorithm %q", protected.Algorithm),
 		}
 	}

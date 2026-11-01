@@ -79,10 +79,10 @@ func (prepared PreparedRequest) VerifySelfJWT(
 			fmt.Errorf("aauth: self-jwt type is %q, want %q", header.Type, expectedType),
 		)
 	}
-	if header.Algorithm != jose.Ed25519Algorithm {
+	if !jose.IsTokenAlgorithm(header.Algorithm) {
 		return VerifiedRequest{}, assertion, &Error{
 			Code:               ErrorUnsupportedAlgorithm,
-			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
+			AcceptedAlgorithms: jose.TokenAlgorithms(),
 			Cause:              fmt.Errorf("aauth: unsupported self-jwt algorithm %q", header.Algorithm),
 		}
 	}

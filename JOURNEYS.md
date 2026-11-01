@@ -483,7 +483,8 @@ Pinned source: [HTTP Signature Keys editor source](https://github.com/dickhardt/
     `PreparedRequest.VerifyJKTJWT`.
   - Evidence: [`signaturekey/jkt_jwt_external_test.go`](signaturekey/jkt_jwt_external_test.go)
     and `go run ./example/bootstrap`.
-  - Missing: SHA-512 and non-Ed25519 delegated-key profiles.
+  - Missing: the SHA-512 profile. Durable and delegated keys may be Ed25519
+    or ES256.
 
 - [ ] **Self-issued `self-jwt` Event delivery — Partial**
   - Flow: Resource creates an Event token → signs delivery with the same key →

@@ -85,8 +85,10 @@ func enroll(ctx context.Context, provider *agentprovider.Server, name string,
   port or path. Agent identifiers end in its host: a provider at
   `https://ap.example` issues `aauth:<name>@ap.example`.
 - **`SigningKey`**: the provider's Ed25519 key, from
-  `jose.NewEd25519SigningKey`. Keep the private key where your service keeps
-  secrets. The key ID you give it goes in every token's header.
+  `jose.NewEd25519SigningKey`, or an ES256 key, from
+  `jose.NewSigningKeyForAlgorithm`. Keep the private key where your service
+  keeps secrets. The key ID you give it goes in every token's header. The
+  agents you issue tokens for may hold either kind of key.
 - **`NewID`**: a source of unique token IDs (`jti`), such as `rand.Text`.
 - **`Clock`**: `aauth.SystemClock{}` in a service.
 - **The decision to issue.** `Issue` checks that the token's claims are well

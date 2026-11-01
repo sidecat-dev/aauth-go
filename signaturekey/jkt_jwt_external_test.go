@@ -97,6 +97,36 @@ func TestJKTJWTRequestProofBindsDurableAndEphemeralKeys(t *testing.T) {
 	}
 }
 
+// Signature-Key, jkt-jwt: a durable key held in a secure enclave may be
+// ECDSA P-256 and delegate to a software key. AAuth names ES256 beside
+// Ed25519 for every key it conveys (Protocol, Signature Algorithms).
+func TestJKTJWTAcceptsAnES256DurableKey(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 11, 1, 3, 30, 0, 0, time.UTC)
+	for _, delegated := range jose.TokenAlgorithms() {
+		t.Run(delegated, func(t *testing.T) {
+			t.Parallel()
+			durable := newTestAlgorithmKey(t, "enclave-key", jose.ES256Algorithm)
+			ephemeral := newTestAlgorithmKey(t, "ephemeral-key", delegated)
+			compact, err := signaturekey.MintJKTJWT(durable, ephemeral.PublicJWK(), now, now.Add(time.Hour), "refresh-es256")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if header, err := jose.PeekHeader(compact); err != nil || header.Algorithm != jose.ES256Algorithm {
+				t.Fatalf("jkt-jwt alg = %q, %v", header.Algorithm, err)
+			}
+			_, delegation, err := prepareTestJKTJWTRequest(t, compact, ephemeral, now).VerifyJKTJWT()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !delegation.IdentityKey().Equal(durable.PublicJWK()) || !delegation.ConfirmationKey().Equal(ephemeral.PublicJWK()) {
+				t.Fatalf("delegation = %#v", delegation)
+			}
+		})
+	}
+}
+
 func TestJKTJWTRejectsUnsupportedDelegatedAlgorithm(t *testing.T) {
 	t.Parallel()
 
@@ -104,15 +134,15 @@ func TestJKTJWTRejectsUnsupportedDelegatedAlgorithm(t *testing.T) {
 	durable := testDiscoverySigningKey(t, "durable-key", 0x63)
 	ephemeral := testDiscoverySigningKey(t, "ephemeral-key", 0x64)
 	unsupported := ephemeral.PublicJWK()
-	unsupported.Alg = "ES256"
+	unsupported.Alg = "ES384"
 	compact := mintTestJKTJWT(t, durable, unsupported, now, now.Add(time.Hour), "refresh-unsupported")
 	prepared := prepareTestJKTJWTRequest(t, compact, ephemeral, now)
 
 	_, _, err := prepared.VerifyJKTJWT()
 	var failure *signaturekey.Error
 	if !errors.As(err, &failure) || failure.Code != signaturekey.ErrorUnsupportedAlgorithm ||
-		len(failure.AcceptedAlgorithms) != 1 || failure.AcceptedAlgorithms[0] != jose.Ed25519Algorithm {
-		t.Fatalf("VerifyJKTJWT() error = %#v, want unsupported_algorithm accepting Ed25519", err)
+		!reflect.DeepEqual(failure.AcceptedAlgorithms, jose.TokenAlgorithms()) {
+		t.Fatalf("VerifyJKTJWT() error = %#v, want unsupported_algorithm accepting Ed25519 and ES256", err)
 	}
 }
 

@@ -16,3 +16,8 @@ import "time"
 type Clock interface {
 	Now() time.Time
 }
+
+// systemClock is the default Clock: the system's current time.
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }

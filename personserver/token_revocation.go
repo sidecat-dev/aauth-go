@@ -74,17 +74,18 @@ type AgentPersonTokenStore interface {
 	LoadAgentPersonTokens(ctx context.Context, agentToken aauth.TokenReference) ([]PersonTokenRecord, error)
 }
 
-// TokenRevocationConfig enables RevokePersonToken and the resource-token half
-// of the revocation endpoint. A revoked person token is refused as a
-// presented_token and never presented to an Access Server; a resource token
-// its Resource withdrew is refused with revoked_resource_token and ends a
-// request waiting on it with revoked.
+// TokenRevocationConfig enables RevokePersonToken, the revocations
+// TerminateMission makes, and the resource-token half of the revocation
+// endpoint. A revoked person token is refused as a presented_token and never
+// presented to an Access Server; a resource token its Resource withdrew is
+// refused with revoked_resource_token and ends a request waiting on it with
+// revoked.
 type TokenRevocationConfig struct {
 	Revocations TokenRevocationStore
-	// HTTPClient and Admit carry RevokePersonToken to Resources and Access
-	// Servers. Leave both nil when this Person Server only receives
-	// resource-token revocations. The server uses a copy of HTTPClient that
-	// follows no redirects and sends no cookies.
+	// HTTPClient and Admit carry RevokePersonToken and TerminateMission to
+	// Resources and Access Servers. Leave both nil when this Person Server
+	// only receives resource-token revocations. The server uses a copy of
+	// HTTPClient that follows no redirects and sends no cookies.
 	HTTPClient *http.Client
 	// Admit decides whether each metadata, revocation and pending URL may be
 	// contacted.
@@ -92,8 +93,9 @@ type TokenRevocationConfig struct {
 	// Limits bounds what one caller may send the revocation endpoint. Zero
 	// members select defaults.
 	Limits aauth.RevocationLimits
-	// Hold bounds how long RevokePersonToken waits for its recipients before
-	// it reports them pending. Zero selects 20 seconds.
+	// Hold bounds how long RevokePersonToken and TerminateMission wait for
+	// their recipients before they report them pending. Zero selects 20
+	// seconds.
 	Hold time.Duration
 }
 
@@ -101,7 +103,10 @@ type tokenRevocationState struct {
 	store   TokenRevocationStore
 	sender  *revocation.Sender
 	tracker *revocation.Tracker
-	hold    time.Duration
+	// missions tracks TerminateMission cascades, keyed by mission, apart
+	// from the token-keyed ones.
+	missions *revocation.Tracker
+	hold     time.Duration
 }
 
 func (server *Server) configureTokenRevocation(config *TokenRevocationConfig) error {
@@ -123,7 +128,9 @@ func (server *Server) configureTokenRevocation(config *TokenRevocationConfig) er
 	if config.Hold < 0 {
 		return errors.New("personserver: revocation hold must not be negative")
 	}
-	state := &tokenRevocationState{store: config.Revocations, tracker: revocation.NewTracker(), hold: config.Hold}
+	state := &tokenRevocationState{
+		store: config.Revocations, tracker: revocation.NewTracker(), missions: revocation.NewTracker(), hold: config.Hold,
+	}
 	if config.HTTPClient != nil || config.Admit != nil {
 		sender, err := revocation.NewSender(config.HTTPClient, config.Admit, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock)
 		if err != nil {
@@ -164,7 +171,9 @@ func (server *Server) revocationEndpoint() string {
 // Agent-token revocation, unless this Person Server cascades it: it then
 // revokes the person tokens it issued to that Agent, holds the request while
 // that cascade runs, and answers the empty 200 once it is terminal, or 202 with
-// a pending URL the Agent Provider polls.
+// a pending URL the Agent Provider polls. Either revocation is reported, as
+// revocation.received, to the supervisor deciding for the Agent that presented
+// the token.
 func (server *Server) handleRevocation(response http.ResponseWriter, request *http.Request) {
 	caller, err := revocation.VerifyCaller(request, server.clock, server.keyResolver, []string{"content-type", "content-digest"}, maxRequestBytes)
 	if err != nil {
@@ -200,7 +209,9 @@ func (server *Server) handleRevocation(response http.ResponseWriter, request *ht
 		return
 	}
 	if caller.Document == aauth.AgentDiscoveryDocument {
-		server.reportAgentTokenRevocation(request.Context(), input)
+		server.reportTokenRevocation(request.Context(), "agent_token", input)
+	} else {
+		server.reportTokenRevocation(request.Context(), "resource_token", input)
 	}
 	if caller.Document != aauth.AgentDiscoveryDocument || !server.cascadesAgentTokenRevocations() {
 		revocation.WriteReport(response, nil)
@@ -274,8 +285,15 @@ type PersonTokenRevocation struct {
 
 // Pending reports whether any recipient has not reached a terminal outcome.
 // Call RevokePersonToken again after RetryAfter to continue.
-func (revoked PersonTokenRevocation) Pending() bool {
-	for _, attempt := range revoked.Attempts {
+func (revoked PersonTokenRevocation) Pending() bool { return attemptsPending(revoked.Attempts) }
+
+// RetryAfter is the longest delay a pending recipient asked for.
+func (revoked PersonTokenRevocation) RetryAfter() time.Duration {
+	return attemptsRetryAfter(revoked.Attempts)
+}
+
+func attemptsPending(attempts []aauth.RevocationAttempt) bool {
+	for _, attempt := range attempts {
 		if attempt.Pending {
 			return true
 		}
@@ -283,10 +301,9 @@ func (revoked PersonTokenRevocation) Pending() bool {
 	return false
 }
 
-// RetryAfter is the longest delay a pending recipient asked for.
-func (revoked PersonTokenRevocation) RetryAfter() time.Duration {
+func attemptsRetryAfter(attempts []aauth.RevocationAttempt) time.Duration {
 	var delay time.Duration
-	for _, attempt := range revoked.Attempts {
+	for _, attempt := range attempts {
 		if attempt.Pending && attempt.RetryAfter > delay {
 			delay = attempt.RetryAfter
 		}

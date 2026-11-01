@@ -72,6 +72,9 @@ type ProblemFields struct {
 	Detail            string `json:"-"`
 	MissionStatus     string `json:"mission_status,omitempty"`
 	TerminationReason string `json:"termination_reason,omitempty"`
+	// Reason is a decider's Markdown reason for a refusal, passed to the
+	// Agent where the deciding party gave one.
+	Reason string `json:"reason,omitempty"`
 }
 
 // WriteProblem writes an AAuth problem response with optional public fields.

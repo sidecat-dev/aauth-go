@@ -54,8 +54,8 @@ three- or four-party authorization. Mission text and updates never cross the
 Person Server boundary, and no generic lifecycle or evidence object joins
 these roles.
 
-The current Bootstrap slice has explicit Ed25519 two-key and single-durable-key
-hosted profiles. Both share durable-key `hwk` enrollment and one stable Agent
+The current Bootstrap slice has explicit two-key and single-durable-key hosted
+profiles, with Ed25519 or ES256 keys. Both share durable-key `hwk` enrollment and one stable Agent
 identity. Refresh then either verifies a durable-to-ephemeral `jkt-jwt` or a
 direct durable `hwk` proof. Both retain the exact first Agent-token result
 before release. `agent` performs each caller-selected exchange once and

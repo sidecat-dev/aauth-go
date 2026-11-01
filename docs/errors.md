@@ -73,7 +73,7 @@ constants.
 | `invalid_key` | The key could not be parsed or the `Signature-Key` header is malformed, or the server could not use the token issuer's keys: it does not trust that issuer, or it could not fetch them. | Do not retry with the same issuer. Either the server does not accept your Agent Provider, which is a setup question between the parties, or its key resolver refused the fetch; see [Fetch issuer keys](roles/resource.md#fetch-issuer-keys). |
 | `unknown_key` | The issuer is trusted, but its key set has no key with this ID. | Retry later, once the server has refreshed the issuer's keys. |
 | `unsupported_scheme` | The key was presented in a way the server does not accept. `Accept-Signature-Scheme` lists the ways it does. | AAuth agents present their token under `jwt`, which `agent.Client` does. |
-| `unsupported_algorithm` | The signing algorithm is not accepted. `Accept-Signature-Alg` lists those that are. | Sign with Ed25519. AAuth tokens and agent keys in this library are Ed25519. |
+| `unsupported_algorithm` | The signing algorithm is not accepted. `Accept-Signature-Alg` lists those that are. | Sign with Ed25519 or ES256. AAuth tokens and agent keys in this library use one of the two. |
 | `cache_miss` | A cache identifier the server issued earlier is not known any more. | Send the full token again. |
 | `issuer_missing`, `issuer_mismatch` | The issuer's metadata has no `issuer`, or names another one. | Nothing on the agent's side: the issuer's metadata needs fixing. |
 | `invalid_request` | The verifier itself is misconfigured. | Nothing on the agent's side. |

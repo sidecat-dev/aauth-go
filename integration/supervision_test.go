@@ -15,7 +15,6 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
-	"gitlab.com/sidecat-dev/aauth-go/accessserver"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
@@ -372,14 +371,11 @@ func decided(decision supervision.Decision) supervisionserver.DecisionResult {
 // person's Agent through a whole mission with a supervisor that applies
 // standing policy and asks the person only for an exception. The Person
 // Server's own policies are never called for the Agent, the person's answer
-// reaches the supervisor with the reach they gave it, and the supervisor then
-// applies that reach without asking again.
+// reaches the supervisor with the reach they gave it, and the supervision
+// server then applies that reach itself, without asking its policy again.
 func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.T) {
 	t.Parallel()
 	world := newSupervisionWorld(t, supervisionWorldOptions{})
-	var reachMu sync.Mutex
-	asksByActionSDI := map[string]string{}
-	reach := map[string]string{}
 	home := world.addSupervisor(homeSupervisorID, true, func(request supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
 		switch request.Request.Kind {
 		case supervision.KindMissionProposal:
@@ -390,12 +386,9 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 		case supervision.KindAuthToken:
 			return decided(supervision.Decision{Verdict: supervision.VerdictAllow, Scope: "records.read"})
 		case supervision.KindPermission:
-			reachMu.Lock()
-			defer reachMu.Unlock()
-			if request.Request.Action != "payments.send" || reach[request.Request.MissionS256+" "+request.Request.Action] == supervision.ApplyMission {
+			if request.Request.Action != "payments.send" {
 				return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
 			}
-			asksByActionSDI[request.Request.SDI] = request.Request.Action
 			return decided(supervision.Decision{
 				Verdict: supervision.VerdictAsk, Summary: "The agent wants to send a payment.",
 				Recommendation: supervision.VerdictDeny,
@@ -408,16 +401,6 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 			return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
 		}
 	})
-	// The supervisor's standing policy learns the reach of each answer.
-	learn := func() {
-		for _, event := range home.events(supervision.EventDecisionResolved) {
-			reachMu.Lock()
-			if action, ok := asksByActionSDI[event.SDI]; ok && event.Answer == supervision.AnswerAllow {
-				reach[event.MissionS256+" "+action] = event.Apply
-			}
-			reachMu.Unlock()
-		}
-	}
 	assistant, assistantID := world.newAgent("assistant")
 	world.route(assistantID, personserver.Supervisor{Issuer: homeSupervisorID, Subject: "home-person-1"})
 	ctx := world.ctx
@@ -509,7 +492,6 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 		resolved[0].Recommendation != supervision.VerdictDeny || resolved[0].Supervisor != "" {
 		t.Fatalf("decision.resolved = %#v, want the person's allow with reach mission and the supervisor's recommendation", resolved)
 	}
-	learn()
 
 	again, err := assistant.RequestPermission(ctx, clientagent.PermissionRequest{
 		PersonServer: supervisedPersonID, MissionS256: mission.S256, Action: "payments.send",
@@ -549,10 +531,11 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 			}
 		}
 	}
+	// The second payment was decided by the person's answer for the
+	// mission, so the policy was not asked about it.
 	wantKinds := []supervision.Kind{
 		supervision.KindMissionProposal, supervision.KindAuthToken, supervision.KindPermission,
-		supervision.KindPermission, supervision.KindPermission, supervision.KindMissionUpdate,
-		supervision.KindMissionCompletion,
+		supervision.KindPermission, supervision.KindMissionUpdate, supervision.KindMissionCompletion,
 	}
 	if !slices.Equal(kinds, wantKinds) {
 		t.Fatalf("the supervisor was asked %v, want %v", kinds, wantKinds)
@@ -1094,144 +1077,5 @@ func TestUnknownMissionIsReplayedBeforeTheSupervisorDecides(t *testing.T) {
 	}
 	if !slices.Equal(outcomes, []string{"allow", "unknown_mission", "allow"}) {
 		t.Fatalf("logged outcomes = %v, want an allow, then the refusal and the allow", outcomes)
-	}
-}
-
-// TestFourPartySupervisorDecidesAndThePersonServerEnforcesIt puts a
-// four-party auth-token request to a supervisor in place of Consent. The
-// Access Server issues the token, which the supervisor is told came from it.
-// A narrowing the PS-to-AS request cannot carry is enforced on delivery: a
-// token broader than the supervisor allowed is refused.
-func TestFourPartySupervisorDecidesAndThePersonServerEnforcesIt(t *testing.T) {
-	t.Parallel()
-	const accessServerID = "https://access.example"
-	world := &supervisionWorld{
-		t: t, ctx: context.Background(), now: time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC),
-		network: newLogicalTransport(), store: testutil.NewSupervisionStore(),
-		tokens: testutil.NewMissionStore(), routes: map[string]personserver.Supervisor{},
-		supervisors: map[string]*supervisorHost{},
-	}
-	world.clock = aauth.ClockFunc(func() time.Time {
-		world.mu.Lock()
-		defer world.mu.Unlock()
-		return world.now
-	})
-	world.httpClient = &http.Client{Transport: world.network}
-	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: world.httpClient, TransportEnforcesEgress: true, Clock: world.clock, Admit: admitExampleOrigins,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	world.resolver = resolver
-	world.provider, err = agentprovider.New(agentprovider.Config{
-		Issuer: supervisedProviderID, SigningKey: newSigningKey(t, "four-party-ap"), Clock: world.clock, NewID: world.id,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	access, err := accessserver.New(accessserver.Config{
-		Issuer: accessServerID, SigningKey: newSigningKey(t, "four-party-as"), KeyResolver: resolver,
-		Clock: world.clock, NewID: world.id,
-		TrustPersonServer: func(context.Context, string) error { return nil },
-		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
-			return accessserver.Decision{Scopes: append([]string(nil), request.Scopes...), Lifetime: 30 * time.Minute}, nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	records, err := resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
-		Issuer: supervisedResourceID, AccessServer: accessServerID, SigningKey: newSigningKey(t, "four-party-resource"),
-		KeyResolver: resolver, Clock: world.clock, NewID: world.id,
-		ScopeDescriptions: map[string]string{"records.read": "Read records", "records.write": "Change records"},
-		RequiredScopes:    func(*http.Request) []string { return []string{"records.read", "records.write"} },
-		ResolvePerson:     func(context.Context, resource.PersonIdentity, resource.PersonContext) error { return nil },
-		Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-			_, _ = io.WriteString(response, "records")
-		}),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	world.people, err = personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
-		Issuer: supervisedPersonID, SigningKey: newSigningKey(t, "four-party-ps"), KeyResolver: resolver,
-		Clock: world.clock, NewID: world.id, HTTPClient: world.httpClient, Tokens: world.tokens,
-		AccessServerEndpoint: func(context.Context, string) (string, error) { return accessServerID + "/token", nil },
-		BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
-			return personserver.Person{Subject: "person-at-records", Lifetime: time.Hour}, nil
-		},
-		Consent: func(_ context.Context, request personserver.AuthorizationRequest) error {
-			world.hostDecided("Consent", request.Agent)
-			return nil
-		},
-		Supervision: &personserver.SupervisionConfig{
-			Route: func(_ context.Context, agent personserver.SupervisedAgent) (personserver.Supervisor, bool, error) {
-				world.mu.Lock()
-				defer world.mu.Unlock()
-				supervisor, ok := world.routes[agent.Agent]
-				return supervisor, ok, nil
-			},
-			Store: world.store, HTTPClient: world.httpClient, Admit: admitExampleOrigins,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	world.network.Handle(supervisedProviderID, world.provider.Handler())
-	world.network.Handle(supervisedPersonID, world.people.Handler())
-	world.network.Handle(supervisedResourceID, records.Handler())
-	world.network.Handle(accessServerID, access.Handler())
-	var narrow sync.Map
-	home := world.addSupervisor(homeSupervisorID, true, func(request supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
-		if _, ok := narrow.Load("on"); ok && request.Request.Kind == supervision.KindAuthToken {
-			return decided(supervision.Decision{Verdict: supervision.VerdictAllow, Scope: "records.read"})
-		}
-		return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
-	})
-	assistant, assistantID := world.newAgent("assistant")
-	route := personserver.Supervisor{Issuer: homeSupervisorID, Subject: "home-person-1"}
-	world.route(assistantID, route)
-	ctx := world.ctx
-	exchange := func() (string, error) {
-		t.Helper()
-		personResult, err := assistant.PersonToken(ctx, clientagent.PersonTokenRequest{PersonServer: supervisedPersonID, Resource: supervisedResourceID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		personToken, ok := personResult.Token()
-		if !ok {
-			t.Fatal("person token was not issued")
-		}
-		resourceToken, err := assistant.Authorize(ctx, clientagent.AuthorizeRequest{
-			Resource: supervisedResourceID, PersonToken: personToken, Scopes: []string{"records.read", "records.write"},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return assistant.Exchange(ctx, clientagent.ExchangeRequest{
-			PersonServer: supervisedPersonID, ResourceToken: resourceToken, PresentedToken: personToken,
-		})
-	}
-	authToken, err := exchange()
-	if err != nil {
-		t.Fatal(err)
-	}
-	claims, err := aauth.VerifyAuthToken(ctx, authToken, resolver, world.clock)
-	if err != nil || claims.Issuer != accessServerID {
-		t.Fatalf("auth token %#v, %v; want one from the Access Server", claims, err)
-	}
-	narrow.Store("on", true)
-	if _, err := exchange(); err == nil {
-		t.Fatal("a token broader than the supervisor allowed was delivered")
-	} else if problem := (*aauth.ProblemError)(nil); !errors.As(err, &problem) || problem.Status != http.StatusForbidden {
-		t.Fatalf("broader token = %v, want 403", err)
-	}
-	if _, err := world.people.DeliverSupervisionEvents(ctx, route); err != nil {
-		t.Fatal(err)
-	}
-	issued := home.events(supervision.EventAuthTokenIssued)
-	if len(issued) != 1 || issued[0].Issuer != accessServerID || issued[0].JTI != claims.JTI {
-		t.Fatalf("auth_token.issued = %#v, want the Access Server's token", issued)
 	}
 }

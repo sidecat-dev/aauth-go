@@ -51,17 +51,12 @@ func main() {
 	}
 }
 
-// standingPolicy is a supervisor's own policy: it allows routine actions,
-// asks the person about payments, and remembers the reach of each answer.
-type standingPolicy struct {
-	mu      sync.Mutex
-	asked   map[string]string
-	allowed map[string]bool
-}
+// standingPolicy is a supervisor's own policy: it allows routine actions and
+// asks the person about payments. The supervision server remembers the reach
+// of the person's answer and applies it to later payments itself.
+type standingPolicy struct{}
 
-func (policy *standingPolicy) decide(_ context.Context, request supervisionserver.DecisionRequest) (supervisionserver.DecisionResult, error) {
-	policy.mu.Lock()
-	defer policy.mu.Unlock()
+func (standingPolicy) decide(_ context.Context, request supervisionserver.DecisionRequest) (supervisionserver.DecisionResult, error) {
 	allow := supervision.Decision{Verdict: supervision.VerdictAllow}
 	if request.Request.Kind == supervision.KindMissionProposal {
 		allow.Mission = &supervision.MissionTerms{
@@ -69,11 +64,9 @@ func (policy *standingPolicy) decide(_ context.Context, request supervisionserve
 			ApprovedResources: request.Request.Resources,
 		}
 	}
-	if request.Request.Kind != supervision.KindPermission || request.Request.Action != "payments.send" ||
-		policy.allowed[request.Request.MissionS256+" "+request.Request.Action] {
+	if request.Request.Kind != supervision.KindPermission || request.Request.Action != "payments.send" {
 		return supervisionserver.DecisionResult{Decision: &allow}, nil
 	}
-	policy.asked[request.Request.SDI] = request.Request.Action
 	return supervisionserver.DecisionResult{Decision: &supervision.Decision{
 		Verdict: supervision.VerdictAsk, Summary: "The agent wants to pay an invoice.",
 		Recommendation: supervision.VerdictAllow,
@@ -82,20 +75,6 @@ func (policy *standingPolicy) decide(_ context.Context, request supervisionserve
 			{Value: supervision.ApplyMission, Label: "Any payment on this mission"},
 		},
 	}}, nil
-}
-
-// observe learns from what the person decided.
-func (policy *standingPolicy) observe(_ context.Context, observation supervisionserver.Observation) error {
-	policy.mu.Lock()
-	defer policy.mu.Unlock()
-	event := observation.Event
-	if event == nil || event.Name != supervision.EventDecisionResolved || event.Answer != supervision.AnswerAllow {
-		return nil
-	}
-	if action, ok := policy.asked[event.SDI]; ok && event.Apply == supervision.ApplyMission {
-		policy.allowed[event.MissionS256+" "+action] = true
-	}
-	return nil
 }
 
 func run(output io.Writer) error {
@@ -141,7 +120,7 @@ func run(output io.Writer) error {
 	// Two supervisors. The organization's accepts its tenant's people at
 	// once; the person's own asks them to confirm. Both sign their decisions,
 	// as a Person Server requires by default.
-	organizationPolicy := &standingPolicy{asked: map[string]string{}, allowed: map[string]bool{}}
+	var organizationPolicy standingPolicy
 	organizationKey := keys["organization"]
 	organization, err := supervisionserver.New(supervisionserver.Config{
 		Issuer: organizationSSID, Name: "Organization supervisor", SigningKey: &organizationKey,
@@ -149,12 +128,12 @@ func run(output io.Writer) error {
 		Connect: func(_ context.Context, request supervisionserver.ConnectRequest) (supervisionserver.ConnectResult, error) {
 			return supervisionserver.ConnectResult{Accept: request.Tenant == "example.org"}, nil
 		},
-		Decide: organizationPolicy.decide, Observe: organizationPolicy.observe,
+		Decide: organizationPolicy.decide,
 	})
 	if err != nil {
 		return err
 	}
-	personalPolicy := &standingPolicy{asked: map[string]string{}, allowed: map[string]bool{}}
+	var personalPolicy standingPolicy
 	var told []string
 	personalKey := keys["personal"]
 	personal, err := supervisionserver.New(supervisionserver.Config{
@@ -164,7 +143,7 @@ func run(output io.Writer) error {
 			return supervisionserver.ConnectResult{Interaction: &supervisionserver.ConnectInteraction{URL: personalSSID + "/confirm"}}, nil
 		},
 		Decide: personalPolicy.decide,
-		Observe: func(ctx context.Context, observation supervisionserver.Observation) error {
+		Observe: func(_ context.Context, observation supervisionserver.Observation) error {
 			if observation.Event != nil {
 				name := string(observation.Event.Name)
 				if observation.Event.Supervisor != "" {
@@ -172,7 +151,7 @@ func run(output io.Writer) error {
 				}
 				told = append(told, name)
 			}
-			return personalPolicy.observe(ctx, observation)
+			return nil
 		},
 	})
 	if err != nil {

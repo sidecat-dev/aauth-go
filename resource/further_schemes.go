@@ -24,8 +24,9 @@ type FurtherSchemesConfig struct {
 	// hwk, jkt-jwt, jwks_uri, jwks, x509, and cached.
 	Schemes []signaturekey.Scheme
 	// Algorithms lists the algorithms, from jose.SignatureAlgorithms, that an
-	// hwk or x509 key may use. Ed25519 is always accepted, because AAuth
-	// requires it; keys of the other schemes use the Ed25519 profile.
+	// hwk or x509 key may use. Ed25519 and ES256 are always accepted, because
+	// AAuth requires the first and recommends the second; keys of the other
+	// schemes use that token profile.
 	Algorithms []string
 	// JWKS resolves the key of a jwks proof. It is required with jwks; an
 	// *signaturekey.HTTPKeyResolver implements it. jwks_uri proofs use the
@@ -118,7 +119,7 @@ func validateFurtherSchemes(config *FurtherSchemesConfig) (*furtherSchemes, erro
 	if cached && !slices.Contains(config.Schemes, signaturekey.SchemeJKTJWT) {
 		return nil, errors.New("aauth: Resource cached scheme requires jkt-jwt, the assertion it caches")
 	}
-	algorithms := []string{jose.Ed25519Algorithm}
+	algorithms := jose.TokenAlgorithms()
 	for _, algorithm := range config.Algorithms {
 		if !slices.Contains(jose.SignatureAlgorithms(), algorithm) {
 			return nil, fmt.Errorf("aauth: Resource further-scheme algorithm %q is not supported", algorithm)

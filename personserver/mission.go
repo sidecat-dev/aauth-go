@@ -128,6 +128,22 @@ type MissionContext struct {
 // nonzero acceptedAt and return an independent copy of the exact post-state.
 // Implementations copy mutable values and never return a terminated mission to
 // active.
+//
+// TerminateMission ends a mission for a reason other than completion, as the
+// host decided. It looks the mission up by owner as LoadMissionForAgent does,
+// materializes expiry at terminatedAt, and in the same atomic operation turns
+// an active mission into terminated with reason, exactly as given; once it
+// returns, no commit under the mission succeeds. A mission already terminated
+// keeps the reason it ended with and is returned unchanged, so a repeat is
+// safe. It returns an independent copy of the post-state.
+//
+// LoadMissionTokens returns every person-token and auth-token record the
+// store retains whose MissionS256 is s256, whichever method committed it:
+// approval, mission-bound and chained issuance, deferred approvals, and the
+// receipts of auth tokens delivered from an Access Server. Order is not
+// significant, expired records may be included, and a mission with none
+// returns empty slices. The Person Server reads it after TerminateMission, so
+// the set is complete.
 type MissionStore interface {
 	TokenStore
 	CommitMission(ctx context.Context, mission MissionRecord, tokens []PersonTokenRecord) error
@@ -136,6 +152,17 @@ type MissionStore interface {
 	CompleteMission(ctx context.Context, expected MissionRecord, acceptedAt time.Time, document aauth.MissionCompletionDocument) (MissionRecord, error)
 	CommitMissionPersonToken(ctx context.Context, expected MissionRecord, decidedAt time.Time, token PersonTokenRecord) error
 	CommitMissionAuthToken(ctx context.Context, expected MissionRecord, decidedAt time.Time, token IssuedAuthTokenRecord) error
+	TerminateMission(ctx context.Context, agent, s256 string, terminatedAt time.Time, reason string) (MissionRecord, error)
+	LoadMissionTokens(ctx context.Context, s256 string) (MissionTokens, error)
+}
+
+// MissionTokens is what a MissionStore retained as issued under one mission.
+// AuthTokens holds the auth tokens this Person Server issued and, in
+// four-party access, the receipts of those it delivered from an Access
+// Server.
+type MissionTokens struct {
+	PersonTokens []PersonTokenRecord
+	AuthTokens   []IssuedAuthTokenRecord
 }
 
 // MissionR3IssuanceStore atomically compares one active mission and retains
@@ -272,7 +299,7 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 		return
 	}
 	if verdict != nil && !verdict.allowed() {
-		writeMissionPolicyProblem(response, "mission_denied", verdict.denial(ErrMissionDenied))
+		writeMissionDenial(response, "mission_denied", verdict)
 		return
 	}
 	if verdict != nil {
@@ -591,7 +618,7 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 		return
 	}
 	if verdict != nil && !verdict.allowed() {
-		writeMissionPolicyProblem(response, denialCode, verdict.denial(ErrMissionDenied))
+		writeMissionDenial(response, denialCode, verdict)
 		return
 	}
 	if verdict != nil {

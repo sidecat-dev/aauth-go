@@ -944,6 +944,41 @@ func (store *memoryMissionStore) CommitMissionAuthToken(
 	return nil
 }
 
+func (store *memoryMissionStore) TerminateMission(_ context.Context, agent, s256 string, at time.Time, reason string) (MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := agent + "\x00" + s256
+	current, exists := store.missions[key]
+	if !exists {
+		return MissionRecord{}, ErrMissionNotFound
+	}
+	if current.State == MissionActive {
+		current.State, current.TerminationReason = MissionTerminated, reason
+		if !current.ExpiresAt.IsZero() && !at.Before(current.ExpiresAt) {
+			current.TerminationReason = "expired"
+		}
+		store.missions[key] = cloneMissionRecord(current)
+	}
+	return cloneMissionRecord(current), nil
+}
+
+func (store *memoryMissionStore) LoadMissionTokens(_ context.Context, s256 string) (MissionTokens, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var issued MissionTokens
+	for _, record := range store.records {
+		if record.MissionS256 == s256 {
+			issued.PersonTokens = append(issued.PersonTokens, record)
+		}
+	}
+	for _, record := range store.authTokens {
+		if record.MissionS256 == s256 {
+			issued.AuthTokens = append(issued.AuthTokens, record)
+		}
+	}
+	return issued, nil
+}
+
 func (store *memoryMissionStore) terminateMission(agent, s256, reason string) {
 	store.mu.Lock()
 	defer store.mu.Unlock()

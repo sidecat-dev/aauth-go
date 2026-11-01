@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 
@@ -48,6 +47,11 @@ const (
 	// SupervisedGone means the Agent received the terminal response or
 	// cancelled the request.
 	SupervisedGone
+	// SupervisedWithAccessServer means the allowed request waits for the
+	// Access Server. The wait has the request's Reference, and the host
+	// advances it with AdvanceFederation; the Agent keeps polling its pending
+	// URL.
+	SupervisedWithAccessServer
 )
 
 // SupervisionQuestion is a question that waits for the Agent's answer. From
@@ -81,10 +85,13 @@ type SupervisedResponse struct {
 // SupervisedRequest is one Agent request waiting on its supervisor or on the
 // person. Reference is the last segment of the Agent's pending URL. Request
 // is the exact supervision request body; a retry carries the same bytes under
-// the same sdi. Ask is the supervisor's ask, nil when the supervisor was not
-// reached and SupervisorUnavailable is set. Decision is the terminal decision
-// once one is made, by the supervisor or the person, and Answer the person's
-// answer. ClaimedAt fences a host step in progress.
+// the same sdi. Update is the Agent's signed updated_request, when it replaced
+// an auth-token request's tokens while answering the supervisor: the request
+// is reviewed, decided and completed with the tokens it carries. Ask is the
+// supervisor's ask, nil when the supervisor was not reached and
+// SupervisorUnavailable is set. Decision is the terminal decision once one is
+// made, by the supervisor or the person, and Answer the person's answer.
+// ClaimedAt fences a host step in progress.
 //
 // Reference, SDI, Kind, Supervisor, AgentProvider, Agent, AgentJKT,
 // MissionS256, Request, AgentRequest, CreatedAt and ExpiresAt never change.
@@ -100,6 +107,7 @@ type SupervisedRequest struct {
 	MissionS256           string
 	Request               []byte
 	AgentRequest          SupervisedAgentRequest
+	Update                *SupervisedAgentRequest
 	State                 SupervisedRequestState
 	SupervisorLocation    string
 	NextPollAt            time.Time
@@ -132,8 +140,9 @@ type SupervisionAnswer struct {
 }
 
 // SupervisionReview is a supervised request as the host presents it to the
-// person. Request is what the Agent asked, as forwarded to the supervisor:
-// the Agent-authored members (description, summary, justification, action
+// person. Request is what the Agent asked, as forwarded to the supervisor,
+// with the tokens and justification of an updated request in place: the
+// Agent-authored members (description, summary, justification, action
 // and parameters) are the Agent's claims, and the forwarded tokens carry
 // what the Resource asserted. Ask is the supervisor's summary,
 // recommendation and proposed refinement; it is nil when the supervisor was
@@ -170,6 +179,16 @@ type supervisedAct struct {
 	// unsupported refuses the act for a supervised Agent before anything is
 	// put to its supervisor.
 	unsupported *SupervisionCompositionError
+	// revocable names the resource token an auth-token act carries, so that
+	// the Resource's revocation of it reaches the supervisor.
+	revocable *revocableToken
+}
+
+// revocableToken is a token an Agent presented in an act, indexed to the
+// Agent until it expires.
+type revocableToken struct {
+	reference aauth.TokenReference
+	expiresAt time.Time
 }
 
 // supervisionVerdict is a terminal decision a handler acts on: an allow with
@@ -206,6 +225,15 @@ func (denial *supervisionDenial) Error() string {
 }
 
 func (denial *supervisionDenial) Unwrap() error { return denial.sentinel }
+
+// writeMissionDenial answers a mission request the supervisor denied with
+// code, passing the supervisor's reason to the Agent (Supervision, Proposal:
+// "The PS returns the denial to the agent with the reason, if any").
+func writeMissionDenial(response http.ResponseWriter, code string, verdict *supervisionVerdict) {
+	response.Header().Set("Cache-Control", "no-store")
+	httpapi.WriteProblem(response, http.StatusForbidden, code, verdict.denial(ErrMissionDenied),
+		httpapi.ProblemFields{Reason: verdict.decision.Reason})
+}
 
 // reportIssued queues an issued-token event for the supervisor that decided
 // the act, under its decision's sdi. A token issued without a supervisor is
@@ -265,13 +293,15 @@ func supervisionVerdictFrom(ctx context.Context) *supervisionVerdict {
 // supervisionCompletion is the decision a completion run acts on: the
 // Person Server serves the Agent's retained request again, verified as it
 // was made, and the act's decision point returns this decision instead of
-// consulting anyone.
+// consulting anyone. update is the Agent's updated_request, verified as it
+// was made, whose tokens the auth-token request completes with.
 type supervisionCompletion struct {
 	reference  string
 	verdict    supervisionVerdict
 	kind       supervision.Kind
 	agent      string
 	verifiedAt time.Time
+	update     *supervisionUpdate
 }
 
 type supervisionCompletionKey struct{}
@@ -311,6 +341,12 @@ func (server *Server) supervise(response http.ResponseWriter, request *http.Requ
 	if err := server.followRoute(ctx, act.agent, supervisor); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return nil, true
+	}
+	if act.revocable != nil {
+		if err := server.supervision.store.RecordTokenAgent(ctx, act.revocable.reference, act.agent.Subject, act.revocable.expiresAt); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return nil, true
+		}
 	}
 	sdi, err := mintSupervisionID("d-")
 	if err != nil {
@@ -593,14 +629,23 @@ func (server *Server) handleSupervisedPending(response http.ResponseWriter, requ
 	}
 	ctx := request.Context()
 	record, err := server.supervision.store.LoadSupervisedRequest(ctx, request.PathValue("id"))
-	thumbprint, thumbprintErr := agent.Confirmation.JWK.Thumbprint()
-	if errors.Is(err, ErrSupervisionNotFound) || (err == nil && (thumbprintErr != nil ||
-		record.Agent != agent.Subject || record.AgentProvider != agent.Issuer || record.AgentJKT != thumbprint)) {
-		writeProblem(response, http.StatusNotFound, "not_found", ErrSupervisionNotFound)
+	if errors.Is(err, ErrSupervisionNotFound) {
+		// A reference the Person Server does not hold, or no longer holds,
+		// is answered as a finished one is.
+		writeProblem(response, http.StatusGone, "invalid_code", err)
 		return
 	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	if err != nil || record.Agent != agent.Subject || record.AgentProvider != agent.Issuer || record.AgentJKT != thumbprint {
+		writeProblem(response, http.StatusForbidden, "wrong_poller", errors.New("personserver: the supervised request belongs to another Agent or key"))
+		return
+	}
+	if record.State == SupervisedWithAccessServer {
+		server.relaySupervisedFederation(response, request, agent, record)
 		return
 	}
 	switch request.Method {
@@ -611,7 +656,7 @@ func (server *Server) handleSupervisedPending(response http.ResponseWriter, requ
 		}
 		server.pollSupervised(response, request, record)
 	case http.MethodPost:
-		server.answerSupervised(response, request, record, proof.ExactBody())
+		server.answerSupervised(response, request, record, proof)
 	case http.MethodDelete:
 		server.cancelSupervised(response, request, record)
 	default:
@@ -673,7 +718,7 @@ func (server *Server) pollSupervised(response http.ResponseWriter, request *http
 func (server *Server) expireSupervised(ctx context.Context, record SupervisedRequest, now time.Time) (SupervisedRequest, error) {
 	after := cloneSupervisedRequest(record)
 	after.State = SupervisedDecided
-	after.Response = problemResponse(http.StatusRequestTimeout, "expired", "The supervised request expired.")
+	after.Response = problemResponse(http.StatusRequestTimeout, "expired", httpapi.ProblemFields{Detail: "The supervised request expired."})
 	after.Question = nil
 	after.ClaimedAt = time.Time{}
 	after.Revision++
@@ -689,29 +734,40 @@ func (server *Server) expireSupervised(ctx context.Context, record SupervisedReq
 }
 
 // answerSupervised takes the Agent's answer to the open question. An answer
-// to the supervisor is relayed to its pending URL and its reply applied; an
+// to the supervisor, or an auth-token request the Agent updated in answer to
+// it, is relayed to the supervisor's pending URL and its reply applied; an
 // answer to the person joins the transcript.
-func (server *Server) answerSupervised(response http.ResponseWriter, request *http.Request, record SupervisedRequest, body []byte) {
+func (server *Server) answerSupervised(response http.ResponseWriter, request *http.Request, record SupervisedRequest, proof signaturekey.VerifiedRequest) {
 	ctx := request.Context()
 	var input struct {
-		Action   string  `json:"action"`
-		Response *string `json:"clarification_response"`
+		Action         string  `json:"action"`
+		Response       *string `json:"clarification_response"`
+		ResourceToken  string  `json:"resource_token"`
+		PresentedToken string  `json:"presented_token"`
+		Justification  string  `json:"justification"`
 	}
-	if err := httpapi.DecodeJSON(bytes.NewReader(body), maxRequestBytes, &input); err != nil {
+	if err := httpapi.DecodeJSON(bytes.NewReader(proof.ExactBody()), maxRequestBytes, &input); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	var relayed supervision.ClarificationResponse
 	switch input.Action {
 	case "clarification_response":
+		if input.Response == nil || *input.Response == "" || len(*input.Response) > supervision.MaxMarkdownBytes {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: clarification_response is required"))
+			return
+		}
+		relayed.Answer = *input.Response
 	case "updated_request":
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: a supervised request cannot be replaced; cancel it and make a new one"))
-		return
+		if input.ResourceToken == "" || input.PresentedToken == "" || len(input.Justification) > supervision.MaxMarkdownBytes {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: updated_request requires resource_token and presented_token"))
+			return
+		}
+		relayed.Updated = &supervision.UpdatedRequest{
+			ResourceToken: input.ResourceToken, PresentedToken: input.PresentedToken, Justification: input.Justification,
+		}
 	default:
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: action must be clarification_response"))
-		return
-	}
-	if input.Response == nil || *input.Response == "" || len(*input.Response) > supervision.MaxMarkdownBytes {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: clarification_response is required"))
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: action must be clarification_response or updated_request"))
 		return
 	}
 	now := server.clock.Now().UTC()
@@ -723,7 +779,17 @@ func (server *Server) answerSupervised(response http.ResponseWriter, request *ht
 		writeProblem(response, http.StatusConflict, "invalid_request", errors.New("personserver: no question is waiting for an answer"))
 		return
 	}
-	answer := *input.Response
+	if relayed.Updated != nil {
+		if record.Kind != supervision.KindAuthToken || record.Question.From == supervision.FromPerson {
+			writeProblem(response, http.StatusBadRequest, "invalid_request",
+				errors.New("personserver: only an auth-token request the supervisor asked about can be updated"))
+			return
+		}
+		if !server.verifySupervisedUpdate(ctx, response, record, proof, *relayed.Updated) {
+			return
+		}
+	}
+	answer := relayed.Answer
 	if record.Question.From == supervision.FromPerson {
 		after := cloneSupervisedRequest(record)
 		after.Transcript = append(after.Transcript,
@@ -751,9 +817,21 @@ func (server *Server) answerSupervised(response http.ResponseWriter, request *ht
 		return
 	}
 	location := claimed.SupervisorLocation
+	received := false
 	result := server.consult(ctx, claimed.Supervisor, decoded, func() (supervision.Outcome, error) {
-		return server.supervision.client.AnswerClarification(ctx, claimed.Supervisor.Issuer, decoded, location, answer)
+		outcome, err := server.supervision.client.AnswerClarification(ctx, claimed.Supervisor.Issuer, decoded, location, relayed)
+		received = err == nil && (outcome.Decision != nil || outcome.Pending != nil)
+		return outcome, err
 	})
+	if relayed.Updated != nil && (received || result.unavailable) {
+		// The request now stands as updated: the supervisor that received it
+		// decides on its tokens, or the person does when it could not be
+		// reached. One the supervisor did not take is asked about again.
+		claimed.Update = &SupervisedAgentRequest{
+			Method: request.Method, Host: request.Host, Path: request.URL.EscapedPath(),
+			Header: request.Header.Clone(), Body: proof.ExactBody(), VerifiedAt: proof.VerifiedAt().UTC(),
+		}
+	}
 	if err := server.settleSupervised(ctx, claimed, result); err != nil {
 		writeSupervisedMutationProblem(response, err)
 		return
@@ -785,8 +863,8 @@ func (server *Server) cancelSupervised(response http.ResponseWriter, request *ht
 	if record.State == SupervisedWaitingForPerson || (record.State == SupervisedClarifying && record.Question != nil && record.Question.From == supervision.FromPerson) {
 		server.reportResolved(ctx, after, supervision.AnswerAbandoned, "", "", nil, false)
 	}
-	response.Header().Set("Cache-Control", "no-store")
-	response.WriteHeader(http.StatusNoContent)
+	// The withdrawal answer of every other wait this Person Server hosts.
+	writePrivateJSON(response, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
 func writeSupervisedMutationProblem(response http.ResponseWriter, err error) {
@@ -889,7 +967,7 @@ func (server *Server) ReviewSupervision(ctx context.Context, reference string) (
 }
 
 func supervisionReview(record SupervisedRequest) (SupervisionReview, error) {
-	decoded, err := decodeSupervisionRequest(record)
+	decoded, err := currentSupervisionRequest(record)
 	if err != nil {
 		return SupervisionReview{}, err
 	}
@@ -1122,7 +1200,7 @@ func validateSupervisedAllow(record SupervisedRequest, decision supervision.Deci
 	if err := validateAllow(decision, now); err != nil {
 		return err
 	}
-	request, err := decodeSupervisionRequest(record)
+	request, err := currentSupervisionRequest(record)
 	if err != nil {
 		return err
 	}
@@ -1174,6 +1252,10 @@ func (server *Server) decideSupervised(ctx context.Context, claimed SupervisedRe
 	decided := cloneDecision(decision)
 	after.Decision = &decided
 	after.Response = &retained
+	if server.awaitsAccessServer(ctx, claimed, retained) {
+		after.State = SupervisedWithAccessServer
+		after.Response = nil
+	}
 	after.Question = nil
 	after.SupervisorLocation = ""
 	after.ClaimedAt = time.Time{}
@@ -1188,30 +1270,35 @@ func (server *Server) decideSupervised(ctx context.Context, claimed SupervisedRe
 // completeSupervised serves the Agent's retained request again, verified as
 // it was made, with the decision in place of a consultation, and returns
 // what the Agent receives. A deny ends the request with the polling error
-// denied, except a permission request, whose answer is the denial itself.
+// denied, except a permission request, whose answer is the denial itself. A
+// mission request's denial carries the reason; a token request's carries
+// none, since the token endpoints give the Agent no reason (Supervision,
+// Supervision Decisions and Proposal).
 func (server *Server) completeSupervised(ctx context.Context, record SupervisedRequest, decision supervision.Decision) (SupervisedResponse, error) {
 	if decision.Verdict == supervision.VerdictDeny && record.Kind != supervision.KindPermission {
-		detail := "The request was denied."
-		if decision.Reason != "" {
-			detail = decision.Reason
+		fields := httpapi.ProblemFields{Detail: "The request was denied."}
+		if record.Kind.MissionEndpoint() {
+			fields.Reason = decision.Reason
 		}
-		return *problemResponse(http.StatusForbidden, "denied", detail), nil
+		return *problemResponse(http.StatusForbidden, "denied", fields), nil
 	}
-	retained := record.AgentRequest
-	target := &url.URL{Scheme: "https", Host: retained.Host, Path: retained.Path}
-	if unescaped, err := url.PathUnescape(retained.Path); err == nil {
-		target.Path, target.RawPath = unescaped, retained.Path
-	}
-	request, err := http.NewRequestWithContext(context.WithValue(ctx, supervisionCompletionKey{}, &supervisionCompletion{
-		reference: record.Reference, kind: record.Kind, agent: record.Agent, verifiedAt: retained.VerifiedAt,
+	completion := supervisionCompletion{
+		reference: record.Reference, kind: record.Kind, agent: record.Agent, verifiedAt: record.AgentRequest.VerifiedAt,
 		verdict: supervisionVerdict{supervisor: record.Supervisor, agent: record.Agent, sdi: record.SDI, decision: decision},
-	}), retained.Method, target.String(), bytes.NewReader(retained.Body))
+	}
+	recorder := &supervisedRecorder{header: http.Header{}}
+	if record.Update != nil && record.Kind == supervision.KindAuthToken {
+		update, err := server.verifyRetainedUpdate(ctx, completion, record)
+		if err != nil {
+			writeAgentTokenProblem(recorder, err)
+			return recorder.result(), nil
+		}
+		completion.update = update
+	}
+	request, err := retainedHTTPRequest(context.WithValue(ctx, supervisionCompletionKey{}, &completion), record.AgentRequest)
 	if err != nil {
 		return SupervisedResponse{}, err
 	}
-	request.Host = retained.Host
-	request.Header = http.Header(retained.Header).Clone()
-	recorder := &supervisedRecorder{header: http.Header{}}
 	switch record.Kind {
 	case supervision.KindPersonToken:
 		server.handlePerson(recorder, request)
@@ -1260,10 +1347,10 @@ func (recorder *supervisedRecorder) result() SupervisedResponse {
 	return SupervisedResponse{Status: status, Header: recorder.header.Clone(), Body: append([]byte(nil), recorder.body.Bytes()...)}
 }
 
-func problemResponse(status int, code, detail string) *SupervisedResponse {
+func problemResponse(status int, code string, fields httpapi.ProblemFields) *SupervisedResponse {
 	recorder := &supervisedRecorder{header: http.Header{}}
 	recorder.header.Set("Cache-Control", "no-store")
-	httpapi.WriteProblem(recorder, status, code, nil, httpapi.ProblemFields{Detail: detail})
+	httpapi.WriteProblem(recorder, status, code, nil, fields)
 	result := recorder.result()
 	return &result
 }
@@ -1342,8 +1429,11 @@ func cloneMissionTerms(terms supervision.MissionTerms) supervision.MissionTerms 
 
 func cloneSupervisedRequest(record SupervisedRequest) SupervisedRequest {
 	record.Request = append([]byte(nil), record.Request...)
-	record.AgentRequest.Header = http.Header(record.AgentRequest.Header).Clone()
-	record.AgentRequest.Body = append([]byte(nil), record.AgentRequest.Body...)
+	record.AgentRequest = cloneSupervisedAgentRequest(record.AgentRequest)
+	if record.Update != nil {
+		update := cloneSupervisedAgentRequest(*record.Update)
+		record.Update = &update
+	}
 	if record.Question != nil {
 		question := *record.Question
 		question.Clarification.Options = append([]string(nil), question.Clarification.Options...)
@@ -1373,4 +1463,10 @@ func cloneSupervisedRequest(record SupervisedRequest) SupervisedRequest {
 		record.Response = &response
 	}
 	return record
+}
+
+func cloneSupervisedAgentRequest(request SupervisedAgentRequest) SupervisedAgentRequest {
+	request.Header = http.Header(request.Header).Clone()
+	request.Body = append([]byte(nil), request.Body...)
+	return request
 }

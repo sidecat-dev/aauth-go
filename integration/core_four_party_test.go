@@ -2,7 +2,9 @@ package integration_test
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -33,6 +35,15 @@ import (
 // requirement.
 func TestCurrentCoreFourParty(t *testing.T) {
 	t.Parallel()
+	for _, keys := range keyProfiles {
+		t.Run(keys.name, func(t *testing.T) {
+			t.Parallel()
+			testCurrentCoreFourParty(t, keys)
+		})
+	}
+}
+
+func testCurrentCoreFourParty(t *testing.T, keys keyProfile) {
 
 	ctx := context.Background()
 	now := time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC)
@@ -48,11 +59,11 @@ func TestCurrentCoreFourParty(t *testing.T) {
 		resourceID      = "https://resource.example"
 	)
 
-	agentProviderKey := newSigningKey(t, "ap-key")
-	agentKey := newSigningKey(t, "agent-key")
-	personServerKey := newSigningKey(t, "ps-key")
-	accessServerKey := newSigningKey(t, "as-key")
-	resourceKey := newSigningKey(t, "resource-key")
+	agentProviderKey := newAlgorithmSigningKey(t, "ap-key", keys.agentProvider)
+	agentKey := newAlgorithmSigningKey(t, "agent-key", keys.agent)
+	personServerKey := newAlgorithmSigningKey(t, "ps-key", keys.personServer)
+	accessServerKey := newAlgorithmSigningKey(t, "as-key", keys.accessServer)
+	resourceKey := newAlgorithmSigningKey(t, "resource-key", keys.resource)
 	agentJKT, err := agentKey.PublicJWK().Thumbprint()
 	if err != nil {
 		t.Fatal(err)
@@ -294,6 +305,10 @@ func TestCurrentCoreFourParty(t *testing.T) {
 		t.Fatal(err)
 	}
 	authClaims := tokenClaims(t, authToken)
+	requireTokenAlgorithm(t, "agent token", agentToken, keys.agentProvider)
+	requireTokenAlgorithm(t, "person token", personToken, keys.personServer)
+	requireTokenAlgorithm(t, "resource token", resourceToken, keys.resource)
+	requireTokenAlgorithm(t, "auth token", authToken, keys.accessServer)
 
 	response, err := reader.Do(ctx, clientagent.Call{
 		Request:   request,
@@ -643,6 +658,53 @@ func newSigningKey(t *testing.T, id string) jose.SigningKey {
 	return key
 }
 
+// keyProfile names the algorithm of each party's signing key in a journey.
+type keyProfile struct {
+	name          string
+	agentProvider string
+	agent         string
+	personServer  string
+	accessServer  string
+	resource      string
+}
+
+// keyProfiles run a journey under each algorithm AAuth names (Protocol,
+// Signature Algorithms): Ed25519, which every party must support; ES256,
+// which every party should; and both at once, an ES256 Agent and Person
+// Server among Ed25519 servers.
+var keyProfiles = []keyProfile{
+	{"Ed25519", jose.Ed25519Algorithm, jose.Ed25519Algorithm, jose.Ed25519Algorithm, jose.Ed25519Algorithm, jose.Ed25519Algorithm},
+	{"ES256", jose.ES256Algorithm, jose.ES256Algorithm, jose.ES256Algorithm, jose.ES256Algorithm, jose.ES256Algorithm},
+	{"mixed", jose.Ed25519Algorithm, jose.ES256Algorithm, jose.ES256Algorithm, jose.Ed25519Algorithm, jose.Ed25519Algorithm},
+}
+
+// newAlgorithmSigningKey returns an Ed25519 key, or an ES256 key held behind
+// the crypto.Signer interface as a hardware key would be.
+func newAlgorithmSigningKey(t *testing.T, id, algorithm string) jose.SigningKey {
+	t.Helper()
+	if algorithm == jose.Ed25519Algorithm {
+		return newSigningKey(t, id)
+	}
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := jose.NewSigningKeyForAlgorithm(id, algorithm, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// requireTokenAlgorithm fails unless compact is signed under algorithm.
+func requireTokenAlgorithm(t *testing.T, label, compact, algorithm string) {
+	t.Helper()
+	header, err := jose.PeekHeader(compact)
+	if err != nil || header.Algorithm != algorithm {
+		t.Fatalf("%s alg = %q, %v; want %q", label, header.Algorithm, err, algorithm)
+	}
+}
+
 type memoryPersonTokenStore struct {
 	mu            sync.Mutex
 	records       map[string]personserver.PersonTokenRecord
@@ -800,6 +862,43 @@ func (store *memoryPersonTokenStore) CommitMissionAuthToken(
 	}
 	store.auth[key] = token
 	return nil
+}
+
+func (store *memoryPersonTokenStore) TerminateMission(
+	_ context.Context, agent, s256 string, at time.Time, reason string,
+) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := agent + "\x00" + s256
+	current, exists := store.missions[key]
+	if !exists {
+		return personserver.MissionRecord{}, personserver.ErrMissionNotFound
+	}
+	if current.State == personserver.MissionActive {
+		current.State, current.TerminationReason = personserver.MissionTerminated, reason
+		if !current.ExpiresAt.IsZero() && !at.Before(current.ExpiresAt) {
+			current.TerminationReason = "expired"
+		}
+		store.missions[key] = cloneIntegrationMissionRecord(current)
+	}
+	return cloneIntegrationMissionRecord(current), nil
+}
+
+func (store *memoryPersonTokenStore) LoadMissionTokens(_ context.Context, s256 string) (personserver.MissionTokens, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var issued personserver.MissionTokens
+	for _, record := range store.records {
+		if record.MissionS256 == s256 {
+			issued.PersonTokens = append(issued.PersonTokens, record)
+		}
+	}
+	for _, record := range store.auth {
+		if record.MissionS256 == s256 {
+			issued.AuthTokens = append(issued.AuthTokens, record)
+		}
+	}
+	return issued, nil
 }
 
 func (store *memoryPersonTokenStore) terminateMission(agent, s256, reason string) error {

@@ -79,6 +79,11 @@ AAuth three-party flow complete: person-123 has records.read
   `ed25519.PrivateKey`. To keep an agent's key across restarts, store the
   32-byte seed (`privateKey.Seed()`) where your service keeps secrets, and
   rebuild the key with `ed25519.NewKeyFromSeed`.
+- **A hardware key.** Where the key lives in a secure enclave that offers
+  only ECDSA P-256, use ES256:
+  `jose.NewSigningKeyForAlgorithm(id, jose.ES256Algorithm, signer)` takes any
+  `crypto.Signer` whose public key is on P-256, and never sees the private
+  key. Every role in this library accepts ES256 agent keys and tokens.
 - **The Agent token.** Your Agent Provider issues it for
   `key.PublicJWK()`. `agent.New` checks that the token names the configured
   `Identifier` and key, and refuses it otherwise. A client holds one Agent

@@ -40,7 +40,7 @@ supervision servers: their organization's, and their own.
 
 <!-- sample: example/supervision/main.go -->
 ```go
-organizationPolicy := &standingPolicy{asked: map[string]string{}, allowed: map[string]bool{}}
+var organizationPolicy standingPolicy
 organizationKey := keys["organization"]
 organization, err := supervisionserver.New(supervisionserver.Config{
 	Issuer: organizationSSID, Name: "Organization supervisor", SigningKey: &organizationKey,
@@ -48,18 +48,17 @@ organization, err := supervisionserver.New(supervisionserver.Config{
 	Connect: func(_ context.Context, request supervisionserver.ConnectRequest) (supervisionserver.ConnectResult, error) {
 		return supervisionserver.ConnectResult{Accept: request.Tenant == "example.org"}, nil
 	},
-	Decide: organizationPolicy.decide, Observe: organizationPolicy.observe,
+	Decide: organizationPolicy.decide,
 })
 ```
 
 The policy allows everything except a payment, which it asks the person
-about, unless the person already allowed payments for this mission:
+about. Once the person allows payments for the rest of the mission, the server
+applies that answer to the next payment without calling the policy:
 
 <!-- sample: example/supervision/main.go -->
 ```go
-func (policy *standingPolicy) decide(_ context.Context, request supervisionserver.DecisionRequest) (supervisionserver.DecisionResult, error) {
-	policy.mu.Lock()
-	defer policy.mu.Unlock()
+func (standingPolicy) decide(_ context.Context, request supervisionserver.DecisionRequest) (supervisionserver.DecisionResult, error) {
 	allow := supervision.Decision{Verdict: supervision.VerdictAllow}
 	if request.Request.Kind == supervision.KindMissionProposal {
 		allow.Mission = &supervision.MissionTerms{
@@ -67,11 +66,9 @@ func (policy *standingPolicy) decide(_ context.Context, request supervisionserve
 			ApprovedResources: request.Request.Resources,
 		}
 	}
-	if request.Request.Kind != supervision.KindPermission || request.Request.Action != "payments.send" ||
-		policy.allowed[request.Request.MissionS256+" "+request.Request.Action] {
+	if request.Request.Kind != supervision.KindPermission || request.Request.Action != "payments.send" {
 		return supervisionserver.DecisionResult{Decision: &allow}, nil
 	}
-	policy.asked[request.Request.SDI] = request.Request.Action
 	return supervisionserver.DecisionResult{Decision: &supervision.Decision{
 		Verdict: supervision.VerdictAsk, Summary: "The agent wants to pay an invoice.",
 		Recommendation: supervision.VerdictAllow,
@@ -124,8 +121,10 @@ Optional:
   log, where `supervision.VerifyExchange` can check them again later.
 - **`Observe`**: receives the events and reports the Person Server sends,
   such as `decision.resolved` with how far the person's answer reaches. The
-  policy above uses it to learn that the person allowed payments for the
-  mission.
+  server itself applies an answer given for the rest of the mission or for
+  always to the agent's later requests of the same kind, before `Decide`;
+  `Kind` sets what the same kind means. A reach your own policy offered is
+  yours to apply.
 - **`TrustPersonServer`**: refuse Person Servers you do not serve, with an
   error wrapping `supervisionserver.ErrUnsupportedIss`. Without it, every
   Person Server is accepted.
@@ -142,10 +141,10 @@ that side.
 
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md): R3 and Resource-initiated
-interaction for a supervised agent are refused, a supervised request that must
-also wait for an Access Server is refused, and the stores in `testutil` are in
-memory. No other implementation has been run against these roles.
+From [CONFORMANCE.md](../../CONFORMANCE.md): Resource-initiated interaction
+for a supervised agent is refused, the supervisor sees an R3 document only by
+reference, and the stores in `testutil` are in memory. No other
+implementation has been run against these roles.
 
 ## Next
 
