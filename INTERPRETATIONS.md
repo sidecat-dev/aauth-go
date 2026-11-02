@@ -343,10 +343,11 @@ which the store records at `expires_at`. 256 bytes is the bound of a
 
 **Source:** AAuth Core, `Pending Response` and `Polling with GET`.
 
-Core both marks `Retry-After` required and defines a five-second default when
-it is absent. The receiver implements the explicit fallback. A present header
-must still contain one valid nonnegative delay. The contradiction remains in
-[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
+Core requires the sender to include `Retry-After` and gives the receiver a
+five-second fallback when it is absent, so the two rules do not conflict
+(AAG-F068, withdrawn in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md)). The receiver
+implements the fallback. A present header must still contain one valid
+nonnegative delay.
 
 ## A `429` poll answer honors both the backoff and its own `Retry-After`
 
@@ -1088,9 +1089,9 @@ and
 
 Core requires a repeated presentation of “the same auth token” to replay a
 held invocation, but it does not define whether sameness means claims, `jti`,
-signature, or compact serialization. Its general Pending URL Security section
-also says every poll after a terminal response must return `410 Gone`, which
-contradicts the held-delivery replay requirement.
+signature, or compact serialization. Pending URL Security exempts deferred
+auth-token delivery and per-call grants from its `410 Gone` rule until the
+retained record expires (AAG-F023, resolved).
 
 `HeldInvocationStore.Claim` and `R3RetryStore.Claim` receive the SHA-256 digest
 of the exact compact token bytes. Only that exact token can replay the retained
