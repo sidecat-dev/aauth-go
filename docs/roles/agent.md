@@ -129,11 +129,26 @@ request to poll instead of a token:
 - `PersonToken` returns a `PersonTokenResult`; `Pending()` gives the request,
   and `PollPersonToken` polls it.
 - `Exchange` returns a `*PendingExchangeError`; its `Pending()` goes to
-  `PollExchange`. `BeginExchange` returns the same as a result instead of an
-  error.
+  `PollExchange`. `BeginExchange` and `PollExchange` return an
+  `ExchangeResult`: `Pending()` while the request waits, `Token()` once the
+  Auth token is issued.
 - Most other steps return an `agent.Pending`, whose `Poll` sends one signed
   `GET` to the pending URL and returns. It refuses to poll before the server's
   `Retry-After` has passed (`*PollTooEarlyError`), and `NextPollAt` says when.
+
+From `example/psconsent`, after the person approves the exchange:
+
+<!-- sample: example/psconsent/main.go -->
+```go
+completion, err := restoredReader.PollExchange(ctx, restored)
+if err != nil {
+	return fmt.Errorf("poll deferred auth-token exchange: %w", err)
+}
+authToken, ok := completion.Token()
+if !ok {
+	return errors.New("approved exchange did not return an auth token")
+}
+```
 
 Each pending value also carries what the server asked for: an interaction URL
 and code to show the person, an approval to wait for, or a clarification

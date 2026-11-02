@@ -61,6 +61,7 @@ func (standingPolicy) decide(_ context.Context, request supervisionserver.Decisi
 	if request.Request.Kind == supervision.KindMissionProposal {
 		allow.Mission = &supervision.MissionTerms{
 			Description:       request.Request.Description + "\n\nAsk before any payment.",
+			ApprovedTools:     request.Request.Tools,
 			ApprovedResources: request.Request.Resources,
 		}
 	}

@@ -72,6 +72,28 @@ if err := people.ApproveMissionProposal(ctx, reviews[0], personserver.MissionDec
 	log.Fatal(err)
 }
 completed := must(reader.PollMissionProposal(ctx, pending))
+mission, approved := completed.Approval()
+if !approved {
+	log.Fatal("approved mission remained pending")
+}
+if !mission.ApprovesTool(readTool) {
+	log.Fatal("approved tool was not recognized")
+}
+if mission.ApprovesTool("SendMessage") {
+	log.Fatal("unapproved tool was treated as approved")
+}
+fmt.Printf("mission pre-approves %s; SendMessage still requires permission\n", readTool)
+update := must(reader.UpdateMission(ctx, clientagent.MissionUpdateRequest{
+	PersonServer: personServerID, MissionS256: mission.Mission().S256,
+	Description: "Report inputs selected",
+}))
+if update.S256() == "" {
+	log.Fatal("mission update returned no exact document digest")
+}
+personToken, ok := mission.PersonToken(resourceID)
+if !ok {
+	log.Fatal("mission approval omitted the approved Resource person token")
+}
 ```
 
 ```sh
@@ -99,12 +121,38 @@ tests). Its fields are your decisions:
 - **`AcceptUpdate`** decides an update; **`ConfirmPersonAcceptedCompletion`**
   decides a completion. Without one, that request is refused.
 
-On the agent, `BeginMission` sends the proposal and returns either the
-approval or a pending proposal to poll with `PollMissionProposal`. The
-approval holds the mission and a Person token for each approved Resource
-(`PersonToken(resource)`). `ApprovesTool` tells the agent whether a tool is
-in the approved list; it is for the agent's own planning, and nothing at the
-Resource enforces it.
+From `example/mission`, which holds each proposal for the person. A held
+proposal needs a non-zero `Lifetime`; with zero, the proposal fails with
+`500 server_error`:
+
+<!-- sample: example/mission/main.go -->
+```go
+Missions: &personserver.MissionConfig{
+	DeferProposal: func(context.Context, personserver.MissionApprovalRequest) (personserver.MissionProposalPendingPolicy, bool, error) {
+		return personserver.MissionProposalPendingPolicy{Lifetime: 5 * time.Minute, RetryAfter: 0}, true, nil
+	},
+	AcceptUpdate: func(_ context.Context, request personserver.MissionUpdatePolicyRequest) error {
+		if request.Document.Update.Description == "" {
+			return errors.New("mission update description is required")
+		}
+		return nil
+	},
+	ConfirmPersonAcceptedCompletion: func(_ context.Context, request personserver.MissionCompletionPolicyRequest) error {
+		if !personAcceptedCompletion {
+			return fmt.Errorf("%w: the responsible person has not accepted completion", personserver.ErrMissionDenied)
+		}
+		return nil
+	},
+},
+```
+
+On the agent, `BeginMission` sends the proposal and `PollMissionProposal`
+polls a pending one; both return a `MissionProposalResult`. `Approval()`
+gives the approval, and `Pending()` the proposal still waiting. The approval holds the mission (`Mission()`, whose
+`S256` names it in later requests) and a Person token for each approved
+Resource (`PersonToken(resource)`). `ApprovesTool` tells the agent whether a
+tool is in the approved list; it is for the agent's own planning, and nothing
+at the Resource enforces it.
 
 ## Issuing under a mission
 
@@ -114,9 +162,22 @@ receive the mission, its approved content and the updates the Person Server
 accepted, in `request.Mission`, and can decide from them. At the Resource,
 `resource.AuthPrincipalFromContext` gives the mission's hash in `MissionS256`.
 
-`UpdateMission` sends a new description and returns the new document's hash.
-`CompleteMission` sends a summary; once it is accepted, the mission is
-terminated, and every later request under it gets `403 mission_terminated`.
+`UpdateMission` sends a `MissionUpdateRequest` with a new description, as in
+the sample above, and returns a `MissionUpdateResult`, whose `S256()` is the
+new document's hash. `CompleteMission` sends a `MissionCompletionRequest`
+with a summary; once it is accepted, the mission is terminated, and every
+later request under it gets `403 mission_terminated`:
+
+<!-- sample: example/mission/main.go -->
+```go
+if err := reader.CompleteMission(ctx, clientagent.MissionCompletionRequest{
+	PersonServer: personServerID, MissionS256: mission.Mission().S256,
+	Summary: "Protected report read completed",
+}); err != nil {
+	log.Fatal(err)
+}
+```
+
 This library's Person Server answers both at once, unless a supervision
 server decides them; `BeginMissionUpdate` and `BeginMissionCompletion` return
 a request to poll when the answer has to wait.

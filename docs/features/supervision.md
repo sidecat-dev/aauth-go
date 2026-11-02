@@ -110,6 +110,26 @@ people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfi
 the Resource. A `Supervisor` names the supervision server, the person's
 identifier there, and an optional tenant.
 
+The agent proposes a mission as usual. `BeginMission` returns a
+`MissionProposalResult`, and `Approval()` gives the mission as the supervisor
+refined it:
+
+<!-- sample: example/supervision/main.go -->
+```go
+proposal, err := planner.BeginMission(ctx, clientagent.MissionRequest{
+	PersonServer: personServerID,
+	Proposal:     aauth.MissionProposal{Description: "# Pay this month's bills", Resources: []string{resourceID}},
+})
+if err != nil {
+	return err
+}
+approval, ok := proposal.Approval()
+if !ok {
+	return errors.New("the mission was not approved")
+}
+mission := approval.Mission()
+```
+
 When the supervisor asks, the host shows the person the request and records
 their answer:
 
@@ -143,6 +163,22 @@ Person Server checks the new tokens, passes them to the supervisor, and issues
 from them if it allows. Only the agent that made the request can poll it;
 another gets `403 wrong_poller`. A denied mission request carries the
 supervisor's or the person's `reason`.
+
+For an Auth token request, `PollExchange` returns an `agent.ExchangeResult`,
+and `Token()` gives the Auth token once the request is allowed. From
+`example/psconsent`, where the Person Server's own consent held it:
+
+<!-- sample: example/psconsent/main.go -->
+```go
+completion, err := restoredReader.PollExchange(ctx, restored)
+if err != nil {
+	return fmt.Errorf("poll deferred auth-token exchange: %w", err)
+}
+authToken, ok := completion.Token()
+if !ok {
+	return errors.New("approved exchange did not return an auth token")
+}
+```
 
 In four-party access, a narrowing allow is sent to the Access Server as
 `scope` and `exp`; this library's Access Server applies them, and the Person
