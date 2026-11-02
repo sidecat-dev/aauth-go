@@ -3,6 +3,7 @@ package agentprovider_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -42,31 +43,62 @@ func TestRevocationClientRejectsForeignReferenceBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestRevocationClientRefusesPersonServerWithoutEndpoint(t *testing.T) {
+// A recipient without a revocation_endpoint is refused before any POST. A
+// Resource MAY publish no metadata (Core, Resource Metadata), so its 404 means
+// the same; a Person Server must publish metadata, and any other status stays
+// a failure to read it.
+func TestRevocationClientRefusesRecipientWithoutEndpoint(t *testing.T) {
 	t.Parallel()
-	provider := newRevocationTestProvider(t)
-	client, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
-		Provider: provider,
-		HTTPClient: &http.Client{Transport: revocationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-			if request.Method != http.MethodGet || request.URL.String() != "https://ps.example/.well-known/aauth-person.json" {
-				t.Fatalf("request = %s %s", request.Method, request.URL)
+	for _, test := range []struct {
+		name      string
+		resource  bool
+		status    int
+		body      string
+		wantError string
+	}{
+		{name: "Person Server document without endpoint", status: http.StatusOK, body: `{"issuer":"https://ps.example"}`, wantError: "Person Server publishes no revocation_endpoint"},
+		{name: "Person Server metadata 404", status: http.StatusNotFound, wantError: "Person Server metadata returned 404"},
+		{name: "Resource document without endpoint", resource: true, status: http.StatusOK, body: `{"issuer":"https://resource.example"}`, wantError: "Resource publishes no revocation_endpoint"},
+		{name: "Resource publishes no metadata", resource: true, status: http.StatusNotFound, wantError: "Resource publishes no metadata, so no revocation_endpoint"},
+		{name: "Resource metadata 410", resource: true, status: http.StatusGone, wantError: "Resource metadata returned 410"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newRevocationTestProvider(t)
+			server, metadataURL := "https://ps.example", "https://ps.example/.well-known/aauth-person.json"
+			if test.resource {
+				server, metadataURL = "https://resource.example", "https://resource.example/.well-known/aauth-resource.json"
 			}
-			return &http.Response{
-				StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
-				Body: io.NopCloser(strings.NewReader(`{"issuer":"https://ps.example"}`)), Request: request,
-			}, nil
-		})},
-		Admit: func(context.Context, string) error { return nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = client.RevokeAgentToken(context.Background(), "https://ps.example", aauth.RevocationRequest{
-		Reference: aauth.TokenReference{Issuer: "https://ap.example", JTI: "token-1"},
-		ExpiresAt: time.Unix(2000000000, 0),
-	})
-	if err == nil || !strings.Contains(err.Error(), "revocation_endpoint") {
-		t.Fatalf("RevokeAgentToken() = %v", err)
+			requests := 0
+			client, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
+				Provider: provider,
+				HTTPClient: &http.Client{Transport: revocationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+					requests++
+					if request.Method != http.MethodGet || request.URL.String() != metadataURL {
+						t.Fatalf("request = %s %s", request.Method, request.URL)
+					}
+					return &http.Response{
+						StatusCode: test.status, Status: fmt.Sprintf("%d %s", test.status, http.StatusText(test.status)),
+						Header: make(http.Header), Body: io.NopCloser(strings.NewReader(test.body)), Request: request,
+					}, nil
+				})},
+				Admit: func(context.Context, string) error { return nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			revocation := aauth.RevocationRequest{
+				Reference: aauth.TokenReference{Issuer: "https://ap.example", JTI: "token-1"},
+				ExpiresAt: time.Unix(2000000000, 0),
+			}
+			if test.resource {
+				err = client.RevokeAgentTokenAtResource(context.Background(), server, revocation)
+			} else {
+				err = client.RevokeAgentToken(context.Background(), server, revocation)
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) || requests != 1 {
+				t.Fatalf("revocation = %v; requests=%d, want %q after the metadata GET only", err, requests, test.wantError)
+			}
+		})
 	}
 }
 

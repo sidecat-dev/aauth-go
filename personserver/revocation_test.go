@@ -380,7 +380,7 @@ func TestRevokeIssuedAuthTokenRejectsUnsafeResourceMetadataBeforePOST(t *testing
 		{
 			name: "missing endpoint", status: http.StatusOK,
 			body:      `{"issuer":"https://resource.example"}`,
-			wantError: "revocation_endpoint",
+			wantError: "Resource publishes no revocation_endpoint",
 		},
 		{
 			name: "insecure endpoint", status: http.StatusOK,
@@ -406,6 +406,16 @@ func TestRevokeIssuedAuthTokenRejectsUnsafeResourceMetadataBeforePOST(t *testing
 			name: "redirect", status: http.StatusFound,
 			location:  "https://redirected.example/metadata",
 			wantError: "metadata returned 302",
+		},
+		{
+			// Core, Resource Metadata: a Resource MAY publish none, and then it
+			// has no revocation_endpoint.
+			name: "Resource publishes no metadata", status: http.StatusNotFound,
+			wantError: "Resource publishes no metadata, so no revocation_endpoint",
+		},
+		{
+			name: "metadata gone", status: http.StatusGone,
+			wantError: "metadata returned 410",
 		},
 		{
 			name: "oversized metadata", status: http.StatusOK,

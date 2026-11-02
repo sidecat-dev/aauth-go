@@ -3508,9 +3508,25 @@ its metadata gets exactly the checks it had. Without an
 `authorization_endpoint`, `Authorize` refuses; R3 and Budgets requests refuse
 because nothing is advertised or declared.
 
+Every other role that reads Resource metadata does the same. A sender of a
+revocation, whether the Person Server, the Access Server or the Agent
+Provider, reads a `404` as a Resource with no `revocation_endpoint`, which is
+what a document without the member says too. Core, Revocation (line 2668):
+"A server without one honors a revoked token until its `exp`." So a cascade
+reports that Resource `revocation_unsupported` (line 2707), and a direct
+revocation returns the error it returns for a document without the endpoint.
+Only Resource metadata is optional: a `404` for Person Server or Access Server
+metadata is still a failure, and so is a `410` or any other status. A Resource
+that signs anything publishes `jwks_uri`, so key resolution through
+`aauth-resource.json` and a Resource link, which names a document that must
+exist, also treat a `404` as a failure.
+
 **Evidence:** `agent` tests (`TestBeginReturnsOrdinaryResponseWithoutRequirement`,
-`TestClientRejectsInvalidRoleMetadata`); the conformance suite's
-`agent.person-flow` against a harness Resource that serves no metadata.
+`TestClientRejectsInvalidRoleMetadata`); `personserver` tests
+(`TestRevokePersonTokenRevokesThePersonTokensChainedFromIt`,
+`TestRevokeIssuedAuthTokenRejectsUnsafeResourceMetadataBeforePOST`);
+`agentprovider` `TestRevocationClientRefusesRecipientWithoutEndpoint`; the
+conformance suite's `agent.person-flow-unpublished-metadata` scenario.
 
 ## An Agent Provider revokes an Agent at the Person Servers its tokens name
 

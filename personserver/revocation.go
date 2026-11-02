@@ -276,6 +276,13 @@ func (server *Server) resourceRevocationProfile(ctx context.Context, resource st
 		return "", nil, fmt.Errorf("personserver: fetch Resource metadata: %w", err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		// A Resource MAY publish no metadata (Core, Resource Metadata). One that
+		// publishes none has no revocation_endpoint, exactly as a document
+		// without the member.
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxRequestBytes))
+		return "", nil, errors.New("personserver: Resource publishes no metadata, so no revocation_endpoint")
+	}
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxRequestBytes))
 		return "", nil, fmt.Errorf("personserver: Resource metadata returned %s", response.Status)
@@ -290,6 +297,9 @@ func (server *Server) resourceRevocationProfile(ctx context.Context, resource st
 	}
 	if metadata.Issuer != resource {
 		return "", nil, errors.New("personserver: Resource metadata issuer does not match requested Resource")
+	}
+	if metadata.RevocationEndpoint == "" {
+		return "", nil, errors.New("personserver: Resource publishes no revocation_endpoint")
 	}
 	if err := aauth.ValidateEndpoint(metadata.RevocationEndpoint); err != nil {
 		return "", nil, fmt.Errorf("personserver: Resource metadata revocation_endpoint: %w", err)

@@ -52,6 +52,10 @@ type RevocationClient struct {
 type revocationTarget struct {
 	label        string
 	metadataPath string
+	// mayPublishNone marks a recipient whose metadata is optional: a Resource
+	// MAY publish none (Core, Resource Metadata), and a 404 then means it has
+	// no revocation_endpoint.
+	mayPublishNone bool
 }
 
 type revocationProfile struct {
@@ -93,7 +97,7 @@ func (client *RevocationClient) RevokeAgentTokenAtResourceWithHeaders(
 	header http.Header,
 ) error {
 	return client.revokeAgentToken(ctx, resource, request, header, revocationTarget{
-		label: "Resource", metadataPath: "/.well-known/aauth-resource.json",
+		label: "Resource", metadataPath: "/.well-known/aauth-resource.json", mayPublishNone: true,
 	})
 }
 
@@ -198,6 +202,10 @@ func (client *RevocationClient) revocationProfile(ctx context.Context, server st
 		return revocationProfile{}, fmt.Errorf("aauth: fetch %s metadata: %w", target.label, err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound && target.mayPublishNone {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumRevocationResponseBytes))
+		return revocationProfile{}, fmt.Errorf("aauth: %s publishes no metadata, so no revocation_endpoint", target.label)
+	}
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumRevocationResponseBytes))
 		return revocationProfile{}, fmt.Errorf("aauth: %s metadata returned %s", target.label, response.Status)
@@ -225,6 +233,9 @@ func (client *RevocationClient) revocationProfile(ctx context.Context, server st
 	}
 	if metadata.Issuer != server {
 		return revocationProfile{}, fmt.Errorf("aauth: %s metadata issuer does not match requested server", target.label)
+	}
+	if metadata.RevocationEndpoint == "" {
+		return revocationProfile{}, fmt.Errorf("aauth: %s publishes no revocation_endpoint", target.label)
 	}
 	if err := aauth.ValidateEndpoint(metadata.RevocationEndpoint); err != nil {
 		return revocationProfile{}, fmt.Errorf("aauth: %s metadata revocation_endpoint: %w", target.label, err)

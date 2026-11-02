@@ -37,6 +37,15 @@ Changes on 2026-11-02 (not released):
   such a Resource. `Authorize` refuses, since there is no
   `authorization_endpoint`. Any other failure, and every published document,
   is checked as before.
+- The revocation senders read the same `404` the same way. A Resource that
+  publishes no metadata has no `revocation_endpoint`, exactly as a document
+  without the member. The Person Server's cascade (`RevokePersonToken`,
+  `TerminateMission`, the Access Server's cascade alike) reports it
+  `revocation_unsupported`. `RevokeIssuedAuthToken` and the Agent Provider's
+  `RevokeAgentTokenAtResource` return an error naming the missing endpoint,
+  as they do for a document without one; the local revocation is recorded
+  first. Person Server and Access Server metadata stay required, so a `404`
+  there, and a `410` or any other status anywhere, is still a failure.
 
 Changes on 2026-10-30. A review of the MUST-level rows against the pinned
 drafts found these behaviors failing, and they now conform:

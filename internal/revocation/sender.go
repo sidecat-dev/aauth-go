@@ -157,6 +157,13 @@ func (sender *Sender) endpoint(ctx context.Context, target Target) (string, []st
 		return "", nil, unavailable(fmt.Errorf("fetch %s metadata: %w", target.Recipient, err)), false
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound && target.Metadata == aauth.ResourceDiscoveryDocument {
+		// A Resource MAY publish no metadata (Core, Resource Metadata). One that
+		// publishes none has no revocation_endpoint, exactly as a document
+		// without the member, so it honors the token until its exp.
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumResponseBytes))
+		return "", nil, unsupported(fmt.Errorf("%s publishes no metadata, so no revocation_endpoint", target.Recipient)), false
+	}
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumResponseBytes))
 		return "", nil, unavailable(fmt.Errorf("%s metadata returned %s", target.Recipient, response.Status)), false
