@@ -898,6 +898,34 @@ before.
 `integration/bootstrap_refresh_test.go`,
 `integration/bootstrap_single_key_test.go`, and `example/bootstrap`.
 
+## The Agent-token refresh margin is strict and the caller acts on it
+
+**Source:** AAuth Core, `Expiry and the Refresh Margin` (line 1301); AAuth
+Bootstrap, `Refresh Patterns` (line 291).
+
+Core says an agent SHOULD refresh a token "when fewer than five minutes
+remain before its `exp`", and Bootstrap applies that to the Agent token. The
+text gives the margin but not the boundary as a comparison, and it does not
+say which part of an implementation decides. `agent.RefreshMargin` is five
+minutes and `BootstrapClient.NeedsRefresh` answers true only when
+`exp - now` is less than it at the client's clock. "Fewer than" makes exactly
+five minutes left outside the margin and four minutes 59 seconds inside it.
+A token already past its `exp`, and claims with no `exp`, also need a
+refresh.
+
+The decision is separate from the exchange. `BootstrapClient` still performs
+one exchange when called and holds no token, so the caller passes the claims
+of the token it holds and performs the two-key or single-key refresh itself.
+As Bootstrap notes, a token issued with a lifetime of five minutes or less is
+inside the margin when issued. The decision does not refuse such a lifetime;
+it reports the token as due.
+
+This decision covers Agent tokens held by a Bootstrap caller. Core's margin
+also covers person and auth tokens, and its second half, not presenting a
+token inside the margin, is not enforced by `agent.Client`.
+
+**Executable example:** `agent/bootstrap_test.go`.
+
 ## Self-hosted issuance uses the ordinary Agent-token trust path
 
 **Sources:** AAuth Core, `Agent + AP`, `AAuth Platform Value Registry`, and

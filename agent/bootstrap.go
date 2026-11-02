@@ -31,7 +31,8 @@ type BootstrapConfig struct {
 // BootstrapClient performs one enrollment or Agent-token refresh exchange.
 // It does not discover endpoints, retry, or mutate an authenticated Client.
 // The Begin methods return a Pending when the Agent Provider defers the
-// exchange; the caller polls it.
+// exchange; the caller polls it. NeedsRefresh tells the caller when the Agent
+// token it holds is due for refresh.
 type BootstrapClient struct {
 	agentProvider      string
 	enrollmentEndpoint string
@@ -81,6 +82,23 @@ type SingleKeyRefreshAgentTokenInput struct {
 type RefreshAgentTokenResult struct {
 	AgentToken string
 	Claims     aauth.AgentTokenClaims
+}
+
+// RefreshMargin is the time before an Agent token's exp inside which the
+// Agent refreshes it. AAuth Core, Expiry and the Refresh Margin, recommends
+// five minutes, and Bootstrap's Refresh Patterns apply it to Agent tokens.
+const RefreshMargin = 5 * time.Minute
+
+// NeedsRefresh reports whether the Agent token with these claims is inside
+// RefreshMargin at the client's clock: fewer than five minutes remain before
+// its exp, so exactly five minutes left is outside the margin. A token past
+// its exp, and claims without an exp, need a refresh too. The decision only
+// reads the clock; the caller performs the refresh.
+func (client *BootstrapClient) NeedsRefresh(claims aauth.AgentTokenClaims) bool {
+	if client == nil || claims.ExpiresAt == 0 {
+		return true
+	}
+	return time.Unix(claims.ExpiresAt, 0).Sub(client.clock.Now()) < RefreshMargin
 }
 
 // NewBootstrapClient constructs the explicit hosted Bootstrap caller. The

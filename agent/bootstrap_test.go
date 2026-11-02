@@ -84,6 +84,21 @@ func TestTwoKeyBootstrapClientEnrollsAndRefreshesOnce(t *testing.T) {
 	if got := fmt.Sprint(calls); got != "[/custom/enrollment /custom/refresh]" {
 		t.Fatalf("bootstrap calls = %s", got)
 	}
+	// The refresh margin: fewer than five minutes before exp.
+	if bootstrap.NeedsRefresh(refreshed.Claims) {
+		t.Fatal("a token with 30 minutes left is inside the refresh margin")
+	}
+	now = time.Unix(refreshed.Claims.ExpiresAt, 0).Add(-agent.RefreshMargin)
+	if bootstrap.NeedsRefresh(refreshed.Claims) {
+		t.Fatal("a token with exactly five minutes left is inside the refresh margin")
+	}
+	now = now.Add(time.Second)
+	if !bootstrap.NeedsRefresh(refreshed.Claims) {
+		t.Fatal("a token with 4m59s left is outside the refresh margin")
+	}
+	if !bootstrap.NeedsRefresh(aauth.AgentTokenClaims{}) {
+		t.Fatal("claims without exp do not need a refresh")
+	}
 }
 
 func TestSingleKeyBootstrapClientRefreshesWithDurableHWK(t *testing.T) {
