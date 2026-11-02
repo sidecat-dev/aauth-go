@@ -809,9 +809,10 @@ metadata is unchanged.
 
 Both operations use signed `application/json` with exact `content-type` and
 `content-digest` coverage. Enrollment presents the durable key through `hwk`
-and carries one opaque `evidence` value. Refresh carries optional `ps` plus one
-opaque `evidence` value, presents a durable-signed Ed25519
-`jkt-s256+jwt`, and signs the HTTP request with its delegated ephemeral key.
+and carries one opaque `evidence` value. Refresh carries optional `ps` and an
+optional opaque `evidence` value (see the next section), presents a
+durable-signed Ed25519 `jkt-s256+jwt`, and signs the HTTP request with its
+delegated ephemeral key.
 Single-key refresh presents the same durable key through `hwk`, signs the HTTP
 request with it directly, and may carry a signed `refresh_jti` plus
 `refresh_expires_at` for bounded exact-result recovery (see below).
@@ -897,6 +898,29 @@ before.
 `agent/bootstrap_test.go`,
 `integration/bootstrap_refresh_test.go`,
 `integration/bootstrap_single_key_test.go`, and `example/bootstrap`.
+
+## A refresh body without evidence carries empty evidence
+
+**Source:** AAuth Bootstrap, `What Bootstrapping Is` (line 106), `Two-Key
+Refresh` (lines 300, 316, 319), `Single-Key Refresh` (line 325), and
+`Per-Platform Enrollment Sketches` (line 404).
+
+Bootstrap's example two-key refresh request has the body `{}` (line 316). The
+draft has the agent present "whatever evidence the AP requires" (line 106),
+says a refresh body "can carry" attestation evidence (line 319), and has the
+AP apply its own policy at refresh (line 300). Evidence is therefore the AP's
+choice, not a member every refresh must carry. Both refresh handlers, two-key
+and single-key, accept a body with no `evidence` member. The host's `Refresh`
+callback receives it as empty `RefreshRequest.Evidence` and decides, as for
+any other evidence; a host that requires evidence refuses it, and the
+handler answers that refusal with its policy-denial status. A present
+`evidence` member is passed through as before, including `null`. Enrollment
+still requires an `evidence` member: the draft gives no example enrollment
+body, and its sketches leave the envelope to the AP (line 404).
+
+**Executable example:** `agentprovider/enrollment_http_test.go`
+(`TestSingleKeyRefreshHTTPHandlerAcceptsBootstrapBareRequest` and
+`TestRefreshHTTPHandlerReturnsPolicyDenialWithoutSignatureChallenge`).
 
 ## The Agent-token refresh margin is strict and the caller acts on it
 

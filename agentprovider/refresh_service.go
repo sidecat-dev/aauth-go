@@ -46,8 +46,8 @@ func (service *EnrollmentService) Refresh(
 	}
 	var input refreshHTTPInput
 	exactBody := proof.ExactBody()
-	if err := httpapi.DecodeJSON(bytes.NewReader(exactBody), httpapi.DefaultMaxBodyBytes, &input); err != nil || !json.Valid(input.Evidence) {
-		return RefreshRecord{}, fmt.Errorf("%w: evidence is required", ErrInvalidRefreshRequest)
+	if err := httpapi.DecodeJSON(bytes.NewReader(exactBody), httpapi.DefaultMaxBodyBytes, &input); err != nil {
+		return RefreshRecord{}, fmt.Errorf("%w: refresh body: %v", ErrInvalidRefreshRequest, err)
 	}
 	if input.PersonServer != "" {
 		if err := aauth.ValidateServerIdentifier(input.PersonServer); err != nil {

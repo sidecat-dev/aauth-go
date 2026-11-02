@@ -180,7 +180,9 @@ type EnrollmentDecision struct {
 }
 
 // RefreshRequest contains the retained enrollment, verified delegation, and
-// application-owned policy input.
+// application-owned policy input. Evidence holds the request's signed
+// evidence member. It is empty when the body has none, as in Bootstrap's
+// example refresh body {}; host policy that requires evidence refuses it.
 type RefreshRequest struct {
 	Enrollment            EnrollmentRecord
 	Profile               RefreshProfile

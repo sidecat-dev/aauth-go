@@ -177,6 +177,7 @@ func TestSingleKeyRefreshHTTPHandlerAcceptsBootstrapBareRequest(t *testing.T) {
 	providerKey := testSigningKey(t, "single-key-bare-provider", 0xb3)
 	durable := testSigningKey(t, "single-key-bare-durable", 0xb4)
 	issued := 0
+	var evidence json.RawMessage
 	provider, err := agentprovider.New(agentprovider.Config{
 		Issuer: "https://ap.example", SigningKey: providerKey, Clock: clock,
 		NewID: func() string { issued++; return fmt.Sprintf("single-key-bare-%d", issued) },
@@ -191,6 +192,7 @@ func TestSingleKeyRefreshHTTPHandlerAcceptsBootstrapBareRequest(t *testing.T) {
 			return agentprovider.EnrollmentDecision{Agent: "aauth:reference@ap.example"}, nil
 		},
 		Refresh: func(_ context.Context, request agentprovider.RefreshRequest) (agentprovider.RefreshDecision, error) {
+			evidence = request.Evidence
 			return agentprovider.RefreshDecision{PersonServer: request.RequestedPersonServer, Lifetime: 30 * time.Minute}, nil
 		},
 	})
@@ -241,6 +243,14 @@ func TestSingleKeyRefreshHTTPHandlerAcceptsBootstrapBareRequest(t *testing.T) {
 		if refused.Code != http.StatusBadRequest {
 			t.Fatalf("%s = %d %s", partial, refused.Code, refused.Body.String())
 		}
+	}
+
+	// Bootstrap's example refresh body is {}: a body with no evidence member
+	// reaches host policy with empty evidence.
+	empty := httptest.NewRecorder()
+	service.SingleKeyRefreshHandler().ServeHTTP(empty, signedSingleKeyRefreshHTTPRequest(t, durable, clock, `{}`))
+	if empty.Code != http.StatusOK || len(evidence) != 0 || issued != 2 {
+		t.Fatalf("empty single-key refresh = %d %s; evidence=%q issued=%d", empty.Code, empty.Body.String(), evidence, issued)
 	}
 }
 
@@ -481,12 +491,14 @@ func TestRefreshHTTPHandlerReturnsPolicyDenialWithoutSignatureChallenge(t *testi
 	durable := testSigningKey(t, "durable-key-denial", 0x92)
 	ephemeral := testSigningKey(t, "ephemeral-key-denial", 0x93)
 	store := newMemoryEnrollmentStore()
+	var evidence []json.RawMessage
 	service, err := agentprovider.NewEnrollmentService(agentprovider.EnrollmentServiceConfig{
 		Provider: provider, Store: store,
 		Enroll: func(context.Context, agentprovider.EnrollmentRequest) (agentprovider.EnrollmentDecision, error) {
 			return agentprovider.EnrollmentDecision{Agent: "aauth:reference@ap.example"}, nil
 		},
-		Refresh: func(context.Context, agentprovider.RefreshRequest) (agentprovider.RefreshDecision, error) {
+		Refresh: func(_ context.Context, request agentprovider.RefreshRequest) (agentprovider.RefreshDecision, error) {
+			evidence = append(evidence, request.Evidence)
 			return agentprovider.RefreshDecision{}, agentprovider.ErrRefreshDenied
 		},
 	})
@@ -506,6 +518,18 @@ func TestRefreshHTTPHandlerReturnsPolicyDenialWithoutSignatureChallenge(t *testi
 	service.RefreshHandler().ServeHTTP(response, signedRefreshHTTPRequest(t, compact, ephemeral, clock))
 	if response.Code != http.StatusForbidden || response.Header().Get("Signature-Error") != "" {
 		t.Fatalf("response = %d %s, Signature-Error %q", response.Code, response.Body.String(), response.Header().Get("Signature-Error"))
+	}
+
+	// Bootstrap's example refresh body {} is a valid request: host policy, not
+	// the profile, decides whether its empty evidence suffices.
+	bare, err := signaturekey.MintJKTJWT(durable, ephemeral.PublicJWK(), now, now.Add(time.Hour), "refresh-denied-empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := httptest.NewRecorder()
+	service.RefreshHandler().ServeHTTP(empty, signedRefreshHTTPRequestWithBody(t, bare, ephemeral, clock, `{}`))
+	if empty.Code != http.StatusForbidden || len(evidence) != 2 || len(evidence[1]) != 0 {
+		t.Fatalf("empty refresh = %d %s; evidence=%q", empty.Code, empty.Body.String(), evidence)
 	}
 }
 
