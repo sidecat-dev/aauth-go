@@ -2,7 +2,7 @@ module aauth.example/hosted-walkthrough
 
 go 1.25
 
-require gitlab.com/sidecat-dev/aauth-go v0.0.0-20261101230727-1e0b03e4069f
+require gitlab.com/sidecat-dev/aauth-go v0.0.0-20261102114704-6fcdb1ef51b0
 
 require (
 	github.com/dunglas/httpsfv v1.1.1 // indirect
