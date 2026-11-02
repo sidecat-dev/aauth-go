@@ -68,7 +68,7 @@ func main() {
 		Issuer: originalAgentProviderID, SigningKey: originalProviderKey, Clock: clock,
 		NewID: func() string { return "original-agent-token" },
 	}))
-	originalAgentToken := must(originalProvider.Issue(aauth.AgentTokenRequest{
+	originalAgentToken := must(originalProvider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: originalAgentID, PersonServer: personServerID,
 		PublicKey: originalAgentKey.PublicJWK(), Lifetime: time.Hour,
 	}))
@@ -80,7 +80,7 @@ func main() {
 		Issuer: resourceOneID, SigningKey: resourceOneProviderKey, Clock: clock,
 		NewID: func() string { return "resource-one-agent-token" },
 	}))
-	resourceOneAgentToken := must(resourceOneProvider.Issue(aauth.AgentTokenRequest{
+	resourceOneAgentToken := must(resourceOneProvider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: resourceOneAgentID, PersonServer: resourceOneOwnPS,
 		PublicKey: resourceOneAgentKey.PublicJWK(), Lifetime: time.Hour,
 	}))

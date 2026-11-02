@@ -55,7 +55,7 @@ func TestCurrentCoreMissionAuditAcrossPersonServerRecomposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentToken, err := provider.Issue(aauth.AgentTokenRequest{
+	agentToken, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: agentID, PersonServer: personServerID,
 		PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	})

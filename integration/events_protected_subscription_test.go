@@ -119,7 +119,7 @@ func TestCurrentProtectedEventsSubscriptionJourney(t *testing.T) {
 		}
 		resourceIdentity.Handler().ServeHTTP(response, request)
 	}))
-	agentToken, err := provider.Issue(aauth.AgentTokenRequest{
+	agentToken, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: agentID, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {
@@ -148,7 +148,7 @@ func TestCurrentProtectedEventsSubscriptionJourney(t *testing.T) {
 	// Another Agent, with its own key, cannot use the ticket even though the
 	// AP issues it a valid subscribe token for this Resource.
 	otherAgentID := "aauth:other-events@ap.example"
-	otherAgentToken, err := provider.Issue(aauth.AgentTokenRequest{
+	otherAgentToken, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: otherAgentID, PublicKey: otherAgentKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

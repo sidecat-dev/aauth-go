@@ -33,7 +33,7 @@ func TestAgentProviderKeyReplacementAndHostPublishedOverlap(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				token, err := provider.Issue(aauth.AgentTokenRequest{Agent: "aauth:reader@ap.example", PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour})
+				token, err := provider.Issue(t.Context(), aauth.AgentTokenRequest{Agent: "aauth:reader@ap.example", PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour})
 				if err != nil {
 					t.Fatal(err)
 				}

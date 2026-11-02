@@ -116,7 +116,7 @@ func TestHostedRegistryFromZeroValue(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 	parentKey := key("parent")
-	parent, err := provider.Issue(aauth.AgentTokenRequest{
+	parent, err := provider.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: "aauth:planner@ap.example", PublicKey: parentKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil { t.Fatal(err) }

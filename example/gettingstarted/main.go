@@ -139,7 +139,7 @@ func enroll(ctx context.Context, provider *agentprovider.Server, name string,
 ) (*agent.Client, error) {
 	key := newKey(name + "-key-1")
 	identifier := "aauth:" + name + "@ap.example"
-	token, err := provider.Issue(aauth.AgentTokenRequest{
+	token, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: identifier, PublicKey: key.PublicJWK(), Lifetime: 10 * time.Minute,
 	})
 	if err != nil {

@@ -60,7 +60,7 @@ func TestFourPartyCallChainPassesTheUpstreamTokenToTheAccessServer(t *testing.T)
 
 	issue := func(provider *agentprovider.Server, request aauth.AgentTokenRequest) string {
 		t.Helper()
-		token, err := provider.Issue(request)
+		token, err := provider.Issue(ctx, request)
 		if err != nil {
 			t.Fatalf("%s agent token: %v", request.Agent, err)
 		}

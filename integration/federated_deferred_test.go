@@ -189,7 +189,7 @@ func newDeferredFederation(t *testing.T) *deferredFederation {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compact, err := ap.Issue(aauth.AgentTokenRequest{Agent: "aauth:reader@ap.example", PersonServer: "https://ps.example", PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour})
+	compact, err := ap.Issue(t.Context(), aauth.AgentTokenRequest{Agent: "aauth:reader@ap.example", PersonServer: "https://ps.example", PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestFederatedDeferredPollIdentityAndSingleDelivery(t *testing.T) {
 				key = newSigningKey(t, "other")
 				subject = "aauth:reader@ap.example"
 			}
-			token, err := f.ap.Issue(aauth.AgentTokenRequest{Agent: subject, PersonServer: "https://ps.example", PublicKey: key.PublicJWK(), Lifetime: time.Hour})
+			token, err := f.ap.Issue(t.Context(), aauth.AgentTokenRequest{Agent: subject, PersonServer: "https://ps.example", PublicKey: key.PublicJWK(), Lifetime: time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}

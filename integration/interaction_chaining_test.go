@@ -84,7 +84,7 @@ func newInteractionChainFixture(t *testing.T) *interactionChainFixture {
 		t.Fatal(err)
 	}
 	relayKey := newSigningKey(t, "chain-orders-agent")
-	relayToken, err := ordersProvider.Issue(aauth.AgentTokenRequest{
+	relayToken, err := ordersProvider.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: chainOrdersAgent, PublicKey: relayKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {
@@ -183,7 +183,7 @@ func newInteractionChainFixture(t *testing.T) *interactionChainFixture {
 	for _, name := range []string{"reader", "other"} {
 		agentKey := newSigningKey(t, "chain-"+name)
 		identifier := "aauth:" + name + "@ap.example"
-		agentToken, err := provider.Issue(aauth.AgentTokenRequest{
+		agentToken, err := provider.Issue(fixture.ctx, aauth.AgentTokenRequest{
 			Agent: identifier, PersonServer: chainPersonServer, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 		})
 		if err != nil {

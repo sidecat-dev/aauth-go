@@ -107,7 +107,7 @@ func (world *supervisionWorld) newR3Agent(local string, fixture supervisionR3Fix
 	world.t.Helper()
 	agentID := "aauth:" + local + "@agents.example"
 	key := newSigningKey(world.t, "agent-r3-"+local)
-	token, err := world.provider.Issue(aauth.AgentTokenRequest{
+	token, err := world.provider.Issue(context.Background(), aauth.AgentTokenRequest{
 		Agent: agentID, PersonServer: supervisedPersonID, PublicKey: key.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

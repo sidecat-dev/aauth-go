@@ -208,7 +208,7 @@ func run(output io.Writer) error {
 	network.Handle(organizationSSID, organization.Handler())
 	network.Handle(personalSSID, personal.Handler())
 	newAgent := func(agentID, keyName string) (*clientagent.Client, error) {
-		token, err := provider.Issue(aauth.AgentTokenRequest{
+		token, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 			Agent: agentID, PersonServer: personServerID, PublicKey: keys[keyName].PublicJWK(), Lifetime: time.Hour,
 		})
 		if err != nil {

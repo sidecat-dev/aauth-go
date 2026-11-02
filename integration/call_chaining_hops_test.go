@@ -296,7 +296,7 @@ func newHopFixture(t *testing.T, options hopOptions) *hopFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.callerToken, err = fixture.callerProvider.Issue(aauth.AgentTokenRequest{
+	fixture.callerToken, err = fixture.callerProvider.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: hopCaller, PersonServer: hopPersonServer, PublicKey: keys["caller"].PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

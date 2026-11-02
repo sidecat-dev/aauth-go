@@ -75,7 +75,7 @@ func run(output io.Writer) {
 		return agentprovider.SubagentDecision{Discriminator: "search", Lifetime: 30 * time.Minute}, nil
 	}))
 	network.Handle(agentProviderID, providerRoutes)
-	parentToken := must(provider.Issue(aauth.AgentTokenRequest{
+	parentToken := must(provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: parentAgentID, PersonServer: personServerID, PublicKey: parentKey.PublicJWK(), Lifetime: time.Hour,
 	}))
 	parent := must(agent.New(ctx, agent.Config{

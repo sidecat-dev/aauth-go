@@ -99,7 +99,7 @@ func newRevocationFixture(t *testing.T, fourParty bool, resourceLimits aauth.Rev
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentToken, err := provider.Issue(aauth.AgentTokenRequest{
+	agentToken, err := provider.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: cascadeAgent, PersonServer: cascadePersonServer, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

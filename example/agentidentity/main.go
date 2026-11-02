@@ -36,7 +36,7 @@ func main() {
 		Issuer: providerID, SigningKey: providerKey, Clock: clock,
 		NewID: func() string { return "example-agent-token" },
 	}))
-	agentToken := must(provider.Issue(aauth.AgentTokenRequest{
+	agentToken := must(provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: agentID, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	}))
 	resolver := signaturekey.StaticKeyResolver{

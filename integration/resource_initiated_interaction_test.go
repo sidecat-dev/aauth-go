@@ -67,7 +67,7 @@ func newInitiatedInteractionFixture(t *testing.T) *initiatedInteractionFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentToken, err := provider.Issue(aauth.AgentTokenRequest{
+	agentToken, err := provider.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: initiatedAgent, PersonServer: initiatedPersonServer, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

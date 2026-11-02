@@ -97,7 +97,7 @@ func (service *EnrollmentService) RefreshSingleKey(
 		return RefreshRecord{}, errors.New("aauth: refresh policy changed the requested Person Server")
 	}
 	issuedAt := service.provider.clock.Now().UTC().Truncate(time.Second)
-	compact, tokenExpiresAt, err := service.provider.issueAt(aauth.AgentTokenRequest{
+	compact, tokenExpiresAt, err := service.provider.issueAt(ctx, aauth.AgentTokenRequest{
 		Agent:            enrollment.Agent,
 		PersonServer:     decision.PersonServer,
 		PublicKey:        identityKey,

@@ -79,6 +79,12 @@ func NewInteractionRelayStore() personserver.InteractionRelayStore {
 	return exampleutil.NewInteractionRelayStore()
 }
 
+// NewIssuedAgentTokenStore returns an empty, concurrency-safe in-memory record
+// of the Agent tokens a provider issued, for agentprovider.Config.IssuedTokens.
+func NewIssuedAgentTokenStore() agentprovider.IssuedAgentTokenStore {
+	return exampleutil.NewIssuedAgentTokenStore()
+}
+
 // NewEnrollmentStore returns an empty, concurrency-safe in-memory enrollment
 // and refresh store using clock for refresh expiry.
 func NewEnrollmentStore(clock aauth.Clock) agentprovider.EnrollmentStore {

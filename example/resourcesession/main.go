@@ -56,7 +56,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	agentToken, err := provider.Issue(aauth.AgentTokenRequest{
+	agentToken, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: agentID, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

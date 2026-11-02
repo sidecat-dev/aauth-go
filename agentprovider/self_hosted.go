@@ -67,13 +67,14 @@ func (selfHosted *SelfHostedAgent) Issue(request SelfHostedAgentTokenRequest) (s
 	if selfHosted == nil || selfHosted.provider == nil || selfHosted.key.ID() == "" {
 		return "", errors.New("aauth: self-hosted Agent is required")
 	}
-	return selfHosted.provider.Issue(aauth.AgentTokenRequest{
+	compact, _, _, err := selfHosted.provider.mint(aauth.AgentTokenRequest{
 		Agent:            selfHosted.agent,
 		PersonServer:     request.PersonServer,
 		PublicKey:        selfHosted.key.PublicJWK(),
 		Lifetime:         request.Lifetime,
 		AdditionalClaims: request.AdditionalClaims,
-	})
+	}, selfHosted.provider.clock.Now())
+	return compact, err
 }
 
 // Handler serves the ordinary Agent Provider metadata and JWKS documents.

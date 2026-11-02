@@ -5,6 +5,7 @@
 package agentprovider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -31,6 +32,10 @@ type Config struct {
 	// Agent may send an http://localhost or http://127.0.0.1 callback in place
 	// of CallbackEndpoint.
 	LocalhostCallbackAllowed bool
+	// IssuedTokens optionally retains a record of every Agent token issued,
+	// sub-agent tokens included, so that RevocationClient.RevokeAgent revokes
+	// an Agent at each Person Server its tokens name.
+	IssuedTokens IssuedAgentTokenStore
 }
 
 // Server issues agent tokens and publishes Agent Provider discovery data.
@@ -43,6 +48,8 @@ type Server struct {
 	callback   string
 	loopback   bool
 	handler    http.Handler
+
+	issuedTokens IssuedAgentTokenStore
 }
 
 // New constructs an Agent Provider server.
@@ -80,40 +87,61 @@ func New(config Config) (*Server, error) {
 		events:     eventsConfig,
 		callback:   config.CallbackEndpoint,
 		loopback:   config.LocalhostCallbackAllowed,
+
+		issuedTokens: config.IssuedTokens,
 	}
 	server.handler = server.newHandler()
 	return server, nil
 }
 
-// Issue creates a current agent token for one validated request.
-func (server *Server) Issue(request aauth.AgentTokenRequest) (string, error) {
+// Issue creates a current agent token for one validated request. With
+// IssuedTokens configured, the token is recorded before it is returned.
+func (server *Server) Issue(ctx context.Context, request aauth.AgentTokenRequest) (string, error) {
 	if server == nil {
 		return "", errors.New("aauth: agent provider is required")
 	}
-	compact, _, err := server.issueAt(request, server.clock.Now())
+	compact, _, err := server.issueAt(ctx, request, server.clock.Now())
 	return compact, err
 }
 
-func (server *Server) issueAt(request aauth.AgentTokenRequest, issuedAt time.Time) (string, time.Time, error) {
+func (server *Server) issueAt(ctx context.Context, request aauth.AgentTokenRequest, issuedAt time.Time) (string, time.Time, error) {
 	if server == nil {
 		return "", time.Time{}, errors.New("aauth: agent provider is required")
 	}
+	if ctx == nil {
+		return "", time.Time{}, errors.New("aauth: context is required")
+	}
+	compact, expiresAt, jti, err := server.mint(request, issuedAt)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if err := server.recordIssued(ctx, IssuedAgentToken{
+		JTI: jti, Agent: request.Agent, PersonServer: request.PersonServer, ExpiresAt: expiresAt,
+	}); err != nil {
+		return "", time.Time{}, err
+	}
+	return compact, expiresAt, nil
+}
+
+// mint signs a top-level Agent token and returns it with its exp and jti.
+func (server *Server) mint(request aauth.AgentTokenRequest, issuedAt time.Time) (string, time.Time, string, error) {
 	if request.ParentAgent != "" {
-		return "", time.Time{}, errors.New("aauth: Issue mints top-level Agent tokens; use IssueSubagent for a sub-agent")
+		return "", time.Time{}, "", errors.New("aauth: Issue mints top-level Agent tokens; use IssueSubagent for a sub-agent")
 	}
 	issuedAt = issuedAt.UTC().Truncate(time.Second)
+	jti := server.newID()
 	compact, err := aauth.MintAgentToken(
 		server.issuer,
 		server.signingKey,
 		request,
 		issuedAt,
-		server.newID(),
+		jti,
 	)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, "", err
 	}
 	expiresAt := time.Unix(issuedAt.Add(request.Lifetime).Unix(), 0).UTC()
-	return compact, expiresAt, nil
+	return compact, expiresAt, jti, nil
 }
 
 // Handler serves the Agent Provider metadata and JWKS documents.

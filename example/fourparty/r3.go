@@ -48,7 +48,7 @@ func runR3Direct(output io.Writer) {
 		Issuer: agentProviderID, SigningKey: providerKey, Clock: clock,
 		NewID: func() string { return "r3-agent-token-1" },
 	}))
-	agentToken := must(provider.Issue(aauth.AgentTokenRequest{
+	agentToken := must(provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: agentID, PersonServer: personServerID,
 		PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	}))

@@ -100,7 +100,7 @@ func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentToken, err := provider.Issue(aauth.AgentTokenRequest{
+	parentToken, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: parentAgentID, PersonServer: personServerID,
 		PublicKey: parentKey.PublicJWK(), Lifetime: time.Hour,
 		AdditionalClaims: parentAdditionalClaims,

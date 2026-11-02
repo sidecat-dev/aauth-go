@@ -49,7 +49,7 @@ func run(output io.Writer) {
 	var ids atomic.Uint64
 	newID := func() string { return fmt.Sprintf("example-%d", ids.Add(1)) }
 	provider := must(agentprovider.New(agentprovider.Config{Issuer: "https://ap.example", SigningKey: apKey, Clock: clock, NewID: newID}))
-	token := must(provider.Issue(aauth.AgentTokenRequest{Agent: "aauth:reader@ap.example", PersonServer: "https://ps.example", PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour}))
+	token := must(provider.Issue(ctx, aauth.AgentTokenRequest{Agent: "aauth:reader@ap.example", PersonServer: "https://ps.example", PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour}))
 	network["https://ap.example"] = provider.Handler()
 	var settled, approved atomic.Bool
 	access := must(accessserver.New(accessserver.Config{

@@ -83,7 +83,7 @@ func TestCurrentCoreImmediateTwoResourceCallChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	originalAgentToken, err := originalProvider.Issue(aauth.AgentTokenRequest{
+	originalAgentToken, err := originalProvider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: originalAgentID, PersonServer: personServerID,
 		PublicKey: originalAgentKey.PublicJWK(), Lifetime: time.Hour,
 	})
@@ -101,7 +101,7 @@ func TestCurrentCoreImmediateTwoResourceCallChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceOneAgentToken, err := resourceOneProvider.Issue(aauth.AgentTokenRequest{
+	resourceOneAgentToken, err := resourceOneProvider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: resourceOneAgentID, PersonServer: resourceOneOwnPS,
 		PublicKey: resourceOneAgentKey.PublicJWK(), Lifetime: time.Hour,
 	})

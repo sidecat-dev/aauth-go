@@ -23,6 +23,12 @@ func TestExportedAgentTokenRevocationStore(t *testing.T) {
 	})
 }
 
+func TestExportedIssuedAgentTokenStore(t *testing.T) {
+	aptest.RunIssuedAgentTokens(t, aptest.IssuedAgentTokensContract{New: func(testing.TB) agentprovider.IssuedAgentTokenStore {
+		return testutil.NewIssuedAgentTokenStore()
+	}})
+}
+
 func TestExportedEnrollmentStore(t *testing.T) {
 	aptest.RunEnrollment(t, aptest.EnrollmentContract{New: func(_ testing.TB, clock aauth.Clock) agentprovider.EnrollmentStore {
 		return testutil.NewEnrollmentStore(clock)

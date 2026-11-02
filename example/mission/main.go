@@ -55,7 +55,7 @@ func main() {
 		Issuer: agentProviderID, SigningKey: providerKey, Clock: clock,
 		NewID: func() string { return "agent-token-1" },
 	}))
-	agentToken := must(provider.Issue(aauth.AgentTokenRequest{
+	agentToken := must(provider.Issue(context.Background(), aauth.AgentTokenRequest{
 		Agent: agentID, PersonServer: personServerID,
 		PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	}))

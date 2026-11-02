@@ -261,7 +261,7 @@ func (world *supervisionWorld) newAgent(local string) (*clientagent.Client, stri
 	world.t.Helper()
 	agentID := "aauth:" + local + "@agents.example"
 	key := newSigningKey(world.t, "agent-"+local)
-	token, err := world.provider.Issue(aauth.AgentTokenRequest{
+	token, err := world.provider.Issue(context.Background(), aauth.AgentTokenRequest{
 		Agent: agentID, PersonServer: supervisedPersonID, PublicKey: key.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

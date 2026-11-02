@@ -81,16 +81,24 @@ func (server *Server) IssueSubagent(ctx context.Context, parentToken string, req
 	if parentExpiresAt := time.Unix(parent.ExpiresAt, 0); issuedAt.Add(lifetime).After(parentExpiresAt) {
 		lifetime = parentExpiresAt.Sub(issuedAt)
 	}
+	jti := server.newID()
 	compact, err := aauth.MintAgentToken(server.issuer, server.signingKey, aauth.AgentTokenRequest{
 		Agent: child, ParentAgent: parent.Subject, PersonServer: parent.PersonServer,
 		PublicKey: request.PublicKey, Lifetime: lifetime, AdditionalClaims: request.AdditionalClaims,
-	}, issuedAt, server.newID())
+	}, issuedAt, jti)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidSubagentRequest, err)
 	}
 	// Return only a token the protocol verifier accepts for this parent.
-	if _, err := aauth.VerifySubagentToken(ctx, compact, parent, own, server.clock); err != nil {
+	claims, err := aauth.VerifySubagentToken(ctx, compact, parent, own, server.clock)
+	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidSubagentRequest, err)
+	}
+	if err := server.recordIssued(ctx, IssuedAgentToken{
+		JTI: jti, Agent: child, ParentAgent: parent.Subject, PersonServer: parent.PersonServer,
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+	}); err != nil {
+		return "", err
 	}
 	return compact, nil
 }

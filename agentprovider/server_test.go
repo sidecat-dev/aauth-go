@@ -68,7 +68,7 @@ func TestIssueCreatesCurrentAgentToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	compact, err := server.Issue(aauth.AgentTokenRequest{
+	compact, err := server.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent:        "aauth:planner@ap.example",
 		PersonServer: "https://ps.example",
 		PublicKey:    agentKey.PublicJWK(),
@@ -113,7 +113,7 @@ func TestIssueRefusesSubAgentRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = server.Issue(aauth.AgentTokenRequest{
+	_, err = server.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: "aauth:planner+child@ap.example", ParentAgent: "aauth:planner@ap.example",
 		PersonServer: "https://ps.example", PublicKey: testSigningKey(t, "agent-key", 22).PublicJWK(),
 		Lifetime: time.Hour,

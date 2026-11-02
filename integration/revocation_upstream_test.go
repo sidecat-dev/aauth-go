@@ -69,13 +69,13 @@ func TestRevokedUpstreamPersonTokenIsRefusedAtTheAccessServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	callerToken, err := callerProvider.Issue(aauth.AgentTokenRequest{
+	callerToken, err := callerProvider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: callerID, PersonServer: personServerID, PublicKey: callerKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	relayToken, err := relayProvider.Issue(aauth.AgentTokenRequest{
+	relayToken, err := relayProvider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: relayAgentID, PersonServer: personServerID, PublicKey: relayKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

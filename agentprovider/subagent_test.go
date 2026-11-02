@@ -57,7 +57,7 @@ func newSubagentProviderFixture(t *testing.T) *subagentProviderFixture {
 
 func (f *subagentProviderFixture) parentToken(t *testing.T, lifetime time.Duration) string {
 	t.Helper()
-	compact, err := f.provider.Issue(aauth.AgentTokenRequest{
+	compact, err := f.provider.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: "aauth:planner@ap.example", PersonServer: "https://ps.example",
 		PublicKey: f.parent.PublicJWK(), Lifetime: lifetime,
 	})

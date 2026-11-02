@@ -137,7 +137,7 @@ func TestKeyRotationReauthorizesWithFreshResourceTokensAtThePersonServer(t *test
 		return reader.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken})
 	}
 
-	oldToken, err := provider.Issue(aauth.AgentTokenRequest{
+	oldToken, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: agentID, PersonServer: personServerID, PublicKey: oldKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {
@@ -175,7 +175,7 @@ func TestKeyRotationReauthorizesWithFreshResourceTokensAtThePersonServer(t *test
 	// The Agent rotates its signing key and receives a new Agent token for the
 	// same identity. Thirty-one minutes later the prior auth token has also
 	// expired.
-	newToken, err := provider.Issue(aauth.AgentTokenRequest{
+	newToken, err := provider.Issue(ctx, aauth.AgentTokenRequest{
 		Agent: agentID, PersonServer: personServerID, PublicKey: newKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

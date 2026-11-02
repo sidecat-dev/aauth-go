@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -32,7 +33,7 @@ func (world *supervisionWorld) newKeyedAgent(local string) keyedAgent {
 	world.t.Helper()
 	agent := keyedAgent{id: "aauth:" + local + "@agents.example", key: newSigningKey(world.t, "agent-"+local)}
 	var err error
-	agent.token, err = world.provider.Issue(aauth.AgentTokenRequest{
+	agent.token, err = world.provider.Issue(context.Background(), aauth.AgentTokenRequest{
 		Agent: agent.id, PersonServer: supervisedPersonID, PublicKey: agent.key.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

@@ -108,7 +108,7 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 	transport.Handle(providerID, provider.Handler())
 	transport.Handle(resourceID, resourceEvents.PublicSubscriptionHandler())
 
-	agentToken, err := provider.Issue(aauth.AgentTokenRequest{
+	agentToken, err := provider.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: agentID, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {

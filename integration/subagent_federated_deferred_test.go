@@ -79,7 +79,7 @@ func newSubagentFederation(t *testing.T, childLifetime time.Duration) *subagentF
 	}
 	f.ap = ap
 	f.network.Handle("https://ap.example", ap.Handler())
-	f.parentToken, err = ap.Issue(aauth.AgentTokenRequest{
+	f.parentToken, err = ap.Issue(t.Context(), aauth.AgentTokenRequest{
 		Agent: subagentParentID, PersonServer: "https://ps.example", PublicKey: f.parentKey.PublicJWK(), Lifetime: time.Hour,
 	})
 	if err != nil {
