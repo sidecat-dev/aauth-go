@@ -145,12 +145,20 @@ It deliberately defers:
 - third-party login, whose current Core flow is internally incomplete;
 - arbitrary recursive delegation and unbounded call chains;
 - a complete cross-endpoint mission log and mission clarification control plane;
-- platform-specific attestation and durable-key replacement; and
+- a verifier for any platform attestation, such as WebAuthn, App Attest or
+  Play Integrity;
+- AP signing-key rollover, the AP-KEY-ROLLOVER gap; and
 - independent-implementation interoperability claims.
 
 These omissions remain visible in [CONFORMANCE.md](CONFORMANCE.md) and
 [JOURNEYS.md](JOURNEYS.md). They do not weaken the behavior claimed by this
 profile.
+
+Platform attestation is optional AP policy in Bootstrap (draft line 208), so
+the profile carries any attestation as signed `evidence` and the host's
+enrollment and refresh callbacks verify it. Durable-key replacement is not
+deferred: a durable-key change is a new enrollment and so a new Agent (line
+337), and the host revokes the old enrollment by transition.
 
 ## Deployment acceptance
 

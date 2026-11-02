@@ -170,9 +170,7 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [`integration/core_four_party_test.go`](integration/core_four_party_test.go),
     and `go run ./example/fourparty`.
 
-### Bounded journeys
-
-- [ ] **Agent enrollment and refresh — Partial**
+- [x] **Agent enrollment and refresh — Implemented**
   - Flow: Agent → AP with a durable inline key → retained Agent identity →
     Agent token → either delegated-key or direct durable-key refresh → exact
     replay returns the retained token → host disables, restores, or permanently
@@ -185,7 +183,14 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go),
     [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go),
     and `go run ./example/bootstrap`.
-  - Missing: platform-attestation profiles and durable-key replacement.
+  - Host boundary: Bootstrap makes platform attestation optional AP policy
+    (Bootstrap line 208). The host's `Enroll` and `Refresh` callbacks verify
+    whatever the AP requires, carried as signed `evidence`; a refresh body may
+    omit it. A durable-key change is a new enrollment and so a new Agent
+    (line 337). AP signing-key rollover is the separate AP-KEY-ROLLOVER gap
+    in [CONFORMANCE.md](CONFORMANCE.md).
+
+### Bounded journeys
 
 - [ ] **Interactive Person-token issuance — Partial**
   - Flow: top-level Agent → PS with an optional active mission, or parent → PS
