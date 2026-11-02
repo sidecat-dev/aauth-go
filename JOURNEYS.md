@@ -316,9 +316,13 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     `personserver.Server.RevokeIssuedAuthToken` return `*aauth.RateLimitedError`
     (use `errors.As`; `RetryAfter` is the recipient's delay and the caller
     chooses any later attempt). The library never retries.
-  - Missing: automatic Agent-token fan-out, Auth-token four-party
-    propagation, recipient entry or rate enforcement, deferred `202` polling,
-    mission cascade, automatic retry, and session revocation.
+  - Agent fan-out: with `agentprovider.Config.IssuedTokens`,
+    `RevocationClient.RevokeAgent` revokes each unexpired token of an Agent
+    at the Person Server it names
+    ([`integration/agent_token_revocation_test.go`](integration/agent_token_revocation_test.go)).
+  - Missing: Auth-token four-party propagation, recipient entry or rate
+    enforcement, deferred `202` polling, mission cascade, automatic retry, and
+    session revocation.
 
 - [x] **Missionless local-action permission — Implemented**
   - Flow: Agent → PS with one signed local-action request → immediate decision

@@ -487,9 +487,11 @@ sequenceDiagram
 
 Enrollment disablement or revocation stops new refreshes. Token revocation is
 the separate immediate path for a token that already exists. The AP names each
-known recipient explicitly; Core defines no Resource registry or automatic
-fan-out. The PS and Resource expose role-local store interfaces with the same
-source operation rather than one cross-role lifecycle object.
+known recipient explicitly, or, with `Config.IssuedTokens`, revokes an Agent
+at the Person Server each of its tokens names (`RevocationClient.RevokeAgent`);
+Core defines no Resource registry. The PS and Resource expose role-local store
+interfaces with the same source operation rather than one cross-role lifecycle
+object.
 
 ### Self-hosted Agent profile
 

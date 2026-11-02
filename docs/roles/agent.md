@@ -156,8 +156,12 @@ question, which `AnswerClarification` answers. `Cancel` withdraws the request.
 
 ## Also in this package
 
-- Missions: `BeginMission`, `UpdateMission`, `CompleteMission`
-  ([Missions](../features/missions.md)).
+- Missions: `BeginMission`, `UpdateMission`, `CompleteMission`,
+  `ReadMission` ([Missions](../features/missions.md)).
+- Metadata: `aauth.DecodePersonServerMetadata`, `DecodeResourceMetadata`,
+  `DecodeAccessServerMetadata` and `DecodeAgentProviderMetadata` check a
+  document you fetched and return its fields. The client uses them for every
+  document it reads.
 - Call chaining: the `UpstreamToken` fields
   ([Call chaining](../features/call-chaining.md)).
 - R3 and Budgets: `BeginR3Call` and `BeginBudgetCall`

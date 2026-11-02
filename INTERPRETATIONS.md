@@ -2742,7 +2742,10 @@ request (`AAG-F127`). Consent cannot be approved until the Resource returned
 the person without an error. An error callback ends the request in the mapped
 terminal state, which the next poll delivers once. When the Resource withdraws
 the Resource token, the person is not sent on, the Resource's callback is
-refused, and the next poll ends the request with `revoked`.
+refused, and the next poll ends the request with `revoked`. For a supervised
+Agent the supervisor's decision takes the place of the host's consent; see
+"A supervised Resource-initiated interaction is decided before the person is
+sent on".
 
 **Evidence:** `integration/resource_initiated_interaction_test.go`.
 
@@ -2991,9 +2994,9 @@ Resource, which is the Person Server's job; it must not apply consent. An
 allow without narrowing grants a Resource's Budget offer as offered: the
 supervisor saw it in the resource token. R3 authorizations are no exception:
 `DirectR3Config.AuthorizeDocument` and `R3Config.ConsentDocument` and
-`ConsentProposal` are not called either. A Resource-initiated interaction is
-refused with `SupervisionCompositionError` (500 `server_error`), because the
-Resource's flow comes before consent and cannot be put to a supervisor.
+`ConsentProposal` are not called either. Nor is the host's consent after a
+Resource-initiated interaction: see "A supervised Resource-initiated
+interaction is decided before the person is sent on".
 
 **Evidence:** every test in `integration/supervision_test.go` fails if a
 Person Server policy decides for a routed Agent.
@@ -3423,3 +3426,106 @@ never decided (supervisor unavailable) are left to the policy through
 `Observe`. This matches aauth-rust.
 
 **Evidence:** `supervisionserver/reach_test.go:TestStandingAnswersDecideLaterActsOfTheSameKind`.
+
+## The owning Agent reads its mission at the mission's own URL
+
+**Source:** Core `70d6737`, Mission (line 1311), Mission Identifier (line
+1437), Mission Update (line 1481), Mission Management (lines 1514 and 1530)
+and Mission Endpoint Errors.
+
+Core lists only POSTs on `{mission_endpoint}/{mission_s256}`, puts reading a
+mission's status for other parties at `mission_control_endpoint`, and requires
+the PS to "serve [the mission bytes] wherever it later exposes the mission for
+audit". The Person Server answers the owning Agent's signed, bodyless GET of
+the mission's URL with `200`, `Cache-Control: no-store` and
+`{"s256", "mission", "updates": [{"s256", "encoded"}]}`: the bytes the
+approval returned, and each accepted update's exact bytes, oldest first,
+since "a party auditing the mission MUST read both". This is aauth-rust's
+shape. The errors are Mission Endpoint Errors': a malformed `s256` is
+`400 invalid_request`, an absent mission and another Agent's are the same
+`404 mission_not_found` from one owner-qualified lookup, and a terminated
+mission is `403 mission_terminated` with its reason, because a terminated
+mission "MUST reject requests with `mission_terminated`". aauth-rust answers
+a terminated mission's read `200` with `mission_status` and
+`termination_reason` in the body instead; both say the mission ended.
+
+**Evidence:** aauth-conformance scenario 180 (`mission.blob-served`) and
+`integration/mission_three_party_test.go`.
+
+## Metadata decoders check what Core requires of each document
+
+**Source:** Core `70d6737`, Endpoint and Other URLs (line 1973) and Metadata
+Documents (lines 1977-2135).
+
+`aauth.DecodeAgentProviderMetadata`, `DecodePersonServerMetadata`,
+`DecodeAccessServerMetadata` and `DecodeResourceMetadata` take the exact bytes
+fetched from an issuer. The document must be one unambiguous JSON object, its
+`issuer` present (`issuer_missing`) and equal to the issuer byte for byte
+(`issuer_mismatch`), its REQUIRED members present (`jwks_uri` except for a
+Resource; both token endpoints for a Person Server; `auth_token_endpoint` for
+an Access Server), `jwks_uri` and the display URIs `https`, and the
+`auth_token_endpoint`, `person_token_endpoint`, `authorization_endpoint`,
+`mission_endpoint`, `callback_endpoint` and the Budgets `usage_endpoint`
+`https` without query or fragment. Core states no form for the other
+endpoints, and they are checked where they are used. Unknown members are
+ignored. The Agent client decodes Person Server and Resource metadata this
+way, so a Person Server document without `jwks_uri` is now refused; Core makes
+it REQUIRED.
+
+**Evidence:** aauth-conformance vectors 436-439 (`vector.metadata`) once the
+adapter calls the decoders; `agent` tests.
+
+## An Agent Provider revokes an Agent at the Person Servers its tokens name
+
+**Source:** Core `70d6737`, Who Revokes What (line 2696) and Revocation
+Cascade (lines 2755 and 2758).
+
+"The agent provider calls the PS's revocation endpoint", and the parties that
+cascade "retain what they issued". The Person Server an Agent token is for is
+its `ps` claim. With `Config.IssuedTokens`, the provider records each Agent
+token's `jti`, `sub`, `ps` and `exp`, sub-agent and hosted-refresh tokens
+included, before it returns the token, and a failure withholds the token.
+`RevocationClient.RevokeAgent` revokes every unexpired token of one Agent at
+the Person Server it names, each by its own `(iss, jti)` and `exp`. A token
+with no `ps` has "no revocation path"; its outcome is
+`ErrAgentTokenNamesNoPersonServer`, and a direct Agent-identity Resource is
+still revoked at only by name (`RevokeAgentTokenAtResource`), an extension to
+the table. A sub-agent is its own Agent and is revoked by its identifier. A
+hosted refresh can record a candidate token that lost to a concurrent exact
+refresh; revoking a token no one holds is harmless.
+
+**Evidence:** `integration/agent_token_revocation_test.go:TestAgentProviderRevokesAnAgentAtEveryPersonServerItsTokensName`
+and `agentprovider/storetest.RunIssuedAgentTokens`.
+
+## A supervised Resource-initiated interaction is decided before the person is sent on
+
+**Source:** Core `70d6737`, Resource-Initiated Interaction (line 986);
+Supervision `70d6737`, What This Document Defines (line 79), Supervision
+Decisions and Deferred Decisions.
+
+Core has the PS "resolve the resource's interaction before presenting its own
+consent". Supervision has the PS put to the SS "every act it would otherwise
+put to the person" and make no decision of its own. Neither says where the
+supervision request falls against a Resource's flow. The Person Server puts
+the auth-token request to the supervisor when the Agent makes it, as every
+act: the supervisor sees the resource token and its `interaction` claim. A
+deny ends the request and the person is never sent anywhere. An allow, or the
+person's allow after an ask, takes the place of the PS's consent, and the
+Resource-initiated steps then run unchanged: the PS's own interaction, the
+interstitial, the Resource's flow and the callback, whose error still ends
+the request with the mapped polling error. When the Resource returns the
+person, the PS issues within the allow (its `scope` and `exp`) and reports
+`auth_token.issued` under the decision's `sdi`; the host shows no consent and
+cannot approve (`ErrSupervisedAuthorization`). After an ask, the person
+therefore answers before visiting the Resource rather than after, which is
+the one departure from Core's order, and only in who is asked first.
+
+When the decision comes after the Agent's first request, the pending
+authorization takes the supervised request's reference. The Agent's next poll
+of its supervised pending URL delivers the interaction requirement once, with
+that URL as `Location`; later polls, a clarification answer and a
+cancellation there act on the pending authorization as at its own URL, so the
+Agent polls one URL throughout, as for a supervised request that waits for an
+Access Server.
+
+**Evidence:** `integration/supervision_resource_interaction_test.go`.

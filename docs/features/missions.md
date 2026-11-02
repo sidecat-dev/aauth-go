@@ -182,6 +182,10 @@ This library's Person Server answers both at once, unless a supervision
 server decides them; `BeginMissionUpdate` and `BeginMissionCompletion` return
 a request to poll when the answer has to wait.
 
+`ReadMission` reads the mission back from its own URL: the approved bytes,
+checked against `mission_s256`, and every accepted update, oldest first. A
+terminated mission is refused with `403 mission_terminated`.
+
 ## Ending a mission
 
 The person, an administrator or the agent's operator may end a mission before

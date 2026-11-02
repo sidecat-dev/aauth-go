@@ -215,12 +215,25 @@ Decisions are signed by the supervisor, and the Person Server refuses unsigned
 ones unless you set `AllowUnsignedDecisions`. It keeps each signed decision in
 its log, and `supervision.VerifyExchange` checks one again later.
 
+## A Resource that needs its own sign-in
+
+When the resource token carries an `interaction` claim, the Resource needs the
+person in its own flow first, such as an OAuth sign-in at a third party. The
+request still goes to the supervisor first. On an allow, or on the person's
+allow after an ask, the agent gets the Person Server's interaction
+requirement. If the decision came later, the requirement arrives on the
+supervised pending URL the agent already polls. The person goes through your
+interstitial to the Resource and back. `ReceiveResourceInteractionCallback`
+then issues the auth token within the allow. Your host shows no consent for
+it: `AuthorizationInteraction.Supervised` is true, and
+`ApproveAuthorizationInteraction` returns `ErrSupervisedAuthorization`. The
+agent's next poll gets the token, and the supervisor is told
+`auth_token.issued` under its decision's `sdi`.
+
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md): Resource-initiated interaction
-for a supervised agent is refused with a `SupervisionCompositionError`. An
-updated request that answers the person's own question, or that brings an R3
-document, is refused. The supervisor sees an R3 document only by reference.
+From [CONFORMANCE.md](../../CONFORMANCE.md): an updated request that answers
+the person's own question, or that brings an R3 document, is refused. The supervisor sees an R3 document only by reference.
 The stores in `testutil` are in memory, and no other implementation has been
 run against these roles.
 

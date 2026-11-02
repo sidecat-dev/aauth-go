@@ -106,8 +106,14 @@ func enroll(ctx context.Context, provider *agentprovider.Server, name string,
   ([`example/subagent`](../../example/subagent)).
 - **Revocation.** `NewRevocationClient` sends a signed revocation of an Agent
   token to a Person Server (`RevokeAgentToken`) or to a Resource that accepts
-  Agent identity (`RevokeAgentTokenAtResource`). It reaches only the servers
-  you send it to ([`example/revocation`](../../example/revocation)).
+  Agent identity (`RevokeAgentTokenAtResource`)
+  ([`example/revocation`](../../example/revocation)). With
+  `Config.IssuedTokens` set, for example to `testutil.NewIssuedAgentTokenStore`,
+  the provider records every token it issues, and `RevokeAgent` revokes an
+  agent at the Person Server each of its unexpired tokens names. A token that
+  names no Person Server has no revocation path; its outcome is
+  `ErrAgentTokenNamesNoPersonServer`. Store adapters are checked by
+  `storetest.RunIssuedAgentTokens`.
 - **Events.** With `Config.Events` set, the provider publishes an
   `event_endpoint` and accepts events for its agents
   ([Events](../features/events.md)).

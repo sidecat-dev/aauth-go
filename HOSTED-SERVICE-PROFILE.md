@@ -46,10 +46,12 @@ retained state remain distinct even when their handlers share a server.
    The issuing Agent Provider can also sign the exact `(iss, jti)` of an
    already-issued Agent token to the configured Person Server and each known
    direct Agent-identity Resource revocation endpoint. Those recipients then
-   refuse later requests before policy or application dispatch. Other
-   recipients still rely on the token's signed expiry until they receive and
-   enforce a corresponding revocation signal; the protocol defines no Resource
-   registry or automatic fan-out.
+   refuse later requests before policy or application dispatch. With
+   `agentprovider.Config.IssuedTokens`, `RevocationClient.RevokeAgent` finds
+   the Person Server of each unexpired token the Agent holds and revokes it
+   there. Direct Agent-identity Resources still rely on the token's signed
+   expiry unless the host revokes there too; the protocol defines no Resource
+   registry.
 
 Run the complete in-process composition spine with:
 
