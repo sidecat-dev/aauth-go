@@ -219,6 +219,15 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 		acceptedUpdates[1].Mission.AcceptedUpdates[0].Document.Update.Description != "Read the source report first" {
 		t.Fatalf("mission update contexts = %#v", acceptedUpdates)
 	}
+	// The Agent reads its mission back: the approved bytes and both updates.
+	read, err := reader.ReadMission(ctx, clientagent.MissionReadRequest{PersonServer: personServerID, MissionS256: mission.S256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Mission.Encoded != mission.Encoded || len(read.Updates) != 2 ||
+		read.Updates[1].Update.Description != "Include the retained correction" {
+		t.Fatalf("mission read = %#v", read)
+	}
 	personResult, err := reader.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID, MissionS256: mission.S256,
 	})

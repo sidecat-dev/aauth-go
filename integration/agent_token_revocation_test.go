@@ -14,6 +14,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 func TestAgentProviderRevokesAgentTokenAtPersonServerAcrossRecomposition(t *testing.T) {
@@ -264,3 +265,117 @@ func (store *integrationAgentTokenRevocationStore) IsRevoked(
 
 var _ personserver.AgentTokenRevocationStore = (*integrationAgentTokenRevocationStore)(nil)
 var _ resource.AgentTokenRevocationStore = (*integrationAgentTokenRevocationStore)(nil)
+
+// TestAgentProviderRevokesAnAgentAtEveryPersonServerItsTokensName: the
+// Agent Provider records each Agent token it issues, so revoking the Agent
+// reaches the Person Server each token names without the host naming any.
+// A token with no ps has no revocation path and is reported as such.
+func TestAgentProviderRevokesAnAgentAtEveryPersonServerItsTokensName(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	const (
+		agentProviderID = "https://ap.example"
+		agentID         = "aauth:roaming@ap.example"
+		homeID          = "https://home-ps.example"
+		workID          = "https://work-ps.example"
+		resourceID      = "https://resource.example"
+	)
+	network := newLogicalTransport()
+	httpClient := &http.Client{Transport: network}
+	admit := func(context.Context, string) error { return nil }
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock, Admit: admit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := 0
+	provider, err := agentprovider.New(agentprovider.Config{
+		Issuer: agentProviderID, SigningKey: newSigningKey(t, "fan-out-provider"), Clock: clock,
+		NewID: func() string {
+			ids++
+			return "roaming-token-" + string(rune('a'+ids))
+		},
+		IssuedTokens: testutil.NewIssuedAgentTokenStore(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	network.Handle(agentProviderID, provider.Handler())
+	agents := map[string]*clientagent.Client{}
+	for _, personServerID := range []string{homeID, workID} {
+		server, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
+			Issuer: personServerID, SigningKey: newSigningKey(t, "fan-out-"+personServerID), KeyResolver: resolver, Clock: clock,
+			NewID: func() string { return "person-token" }, Tokens: newMemoryPersonTokenStore(),
+			BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
+				return personserver.Person{Subject: "person-123", Lifetime: time.Minute}, nil
+			},
+			Authorize: func(context.Context, personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
+				return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
+			},
+			AgentTokenRevocations: newIntegrationAgentTokenRevocationStore(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		network.Handle(personServerID, server.Handler())
+		key := newSigningKey(t, "fan-out-agent-"+personServerID)
+		token, err := provider.Issue(ctx, aauth.AgentTokenRequest{
+			Agent: agentID, PersonServer: personServerID, PublicKey: key.PublicJWK(), Lifetime: time.Hour,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		agents[personServerID], err = clientagent.New(ctx, clientagent.Config{
+			Identifier: agentID, SigningKey: key, AgentToken: token, KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := agents[personServerID].PersonToken(ctx, clientagent.PersonTokenRequest{
+			PersonServer: personServerID, Resource: resourceID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := provider.Issue(ctx, aauth.AgentTokenRequest{
+		Agent: agentID, PublicKey: newSigningKey(t, "fan-out-direct").PublicJWK(), Lifetime: time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	revoker, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
+		Provider: provider, HTTPClient: httpClient, Admit: admit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 2; round++ {
+		outcomes, err := revoker.RevokeAgent(ctx, agentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		revoked, unreachable := map[string]bool{}, 0
+		for _, outcome := range outcomes {
+			switch {
+			case outcome.Err == nil:
+				revoked[outcome.Token.PersonServer] = true
+			case errors.Is(outcome.Err, agentprovider.ErrAgentTokenNamesNoPersonServer) && outcome.Token.PersonServer == "":
+				unreachable++
+			default:
+				t.Fatalf("round %d: %s at %q = %v", round, outcome.Token.JTI, outcome.Token.PersonServer, outcome.Err)
+			}
+		}
+		if len(outcomes) != 3 || !revoked[homeID] || !revoked[workID] || unreachable != 1 {
+			t.Fatalf("round %d outcomes = %+v", round, outcomes)
+		}
+	}
+	for personServerID, agent := range agents {
+		_, err := agent.PersonToken(ctx, clientagent.PersonTokenRequest{PersonServer: personServerID, Resource: resourceID})
+		var signatureFailure *signaturekey.Error
+		if !errors.As(err, &signatureFailure) || signatureFailure.Code != signaturekey.ErrorRevokedJWT {
+			t.Fatalf("request at %s after RevokeAgent = %v", personServerID, err)
+		}
+	}
+}
