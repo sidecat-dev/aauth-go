@@ -52,6 +52,11 @@ const (
 	// advances it with AdvanceFederation; the Agent keeps polling its pending
 	// URL.
 	SupervisedWithAccessServer
+	// SupervisedWithResourceInteraction means the allowed request waits for
+	// the person to complete the Resource's own interaction. The Agent
+	// received the interaction requirement on its pending URL, and polls the
+	// pending authorization, which has the request's Reference, there.
+	SupervisedWithResourceInteraction
 )
 
 // SupervisionQuestion is a question that waits for the Agent's answer. From
@@ -176,9 +181,6 @@ type supervisedAct struct {
 	proof     signaturekey.VerifiedRequest
 	expiresAt []time.Time
 	validate  func(supervision.Decision) error
-	// unsupported refuses the act for a supervised Agent before anything is
-	// put to its supervisor.
-	unsupported *SupervisionCompositionError
 	// revocable names the resource token an auth-token act carries, so that
 	// the Resource's revocation of it reaches the supervisor.
 	revocable *revocableToken
@@ -333,10 +335,6 @@ func (server *Server) supervise(response http.ResponseWriter, request *http.Requ
 	}
 	if !routed {
 		return nil, false
-	}
-	if act.unsupported != nil {
-		writeSupervisionCompositionProblem(response, act.unsupported)
-		return nil, true
 	}
 	if err := server.followRoute(ctx, act.agent, supervisor); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -648,6 +646,10 @@ func (server *Server) handleSupervisedPending(response http.ResponseWriter, requ
 		server.relaySupervisedFederation(response, request, agent, record)
 		return
 	}
+	if record.State == SupervisedWithResourceInteraction {
+		server.relaySupervisedResourceInteraction(response, request, record)
+		return
+	}
 	switch request.Method {
 	case http.MethodGet:
 		if !requestBodyIsEmpty(request) {
@@ -676,10 +678,21 @@ func (server *Server) pollSupervised(response http.ResponseWriter, request *http
 		case SupervisedDecided:
 			after := cloneSupervisedRequest(record)
 			after.State = SupervisedGone
+			delivered := *record.Response
+			if server.awaitsResourceInteraction(ctx, record) {
+				// The completion began the Resource's own interaction under
+				// this reference; its requirement is delivered once, and later
+				// polls are relayed to it.
+				after.State = SupervisedWithResourceInteraction
+				after.Response = nil
+				header := http.Header(delivered.Header).Clone()
+				header.Set("Location", supervisionPendingPath+record.Reference)
+				delivered.Header = header
+			}
 			after.Revision++
 			err := server.supervision.store.ReplaceSupervisedRequest(ctx, record, after)
 			if err == nil {
-				writeSupervisedResponse(response, *record.Response)
+				writeSupervisedResponse(response, delivered)
 				return
 			}
 			if !errors.Is(err, ErrSupervisionConflict) {

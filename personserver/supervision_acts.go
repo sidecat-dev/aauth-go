@@ -9,42 +9,11 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
-	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
-
-// SupervisionCompositionError identifies a request from a supervised Agent
-// that this Person Server cannot put to a supervisor. It is available through
-// diagnostics.Handler with errors.As; the wire response is 500 server_error
-// with a public explanation. The Person Server does not fall back to its own
-// policy for a supervised Agent.
-type SupervisionCompositionError struct{ reason string }
-
-// Reason returns resource_interaction (a Resource-initiated interaction
-// before consent).
-func (e *SupervisionCompositionError) Reason() string {
-	if e == nil {
-		return ""
-	}
-	return e.reason
-}
-
-func (e *SupervisionCompositionError) Error() string {
-	switch e.Reason() {
-	case "resource_interaction":
-		return "personserver: a Resource-initiated interaction is not put to a supervisor"
-	default:
-		return "personserver: this request is not put to a supervisor"
-	}
-}
-
-func writeSupervisionCompositionProblem(response http.ResponseWriter, err *SupervisionCompositionError) {
-	response.Header().Set("Cache-Control", "no-store")
-	httpapi.WriteProblem(response, http.StatusInternalServerError, "server_error", err, httpapi.ProblemFields{Detail: err.Error()})
-}
 
 // superviseAuthorization puts a verified auth-token request to the Agent's
 // supervisor, an R3 one included. The supervisor sees the tokens and
@@ -94,9 +63,6 @@ func (server *Server) superviseAuthorization(
 	}
 	if missionRecord != nil {
 		act.expiresAt = append(act.expiresAt, missionRecord.ExpiresAt)
-	}
-	if resourceToken.Interaction != nil && server.authorizationMode == authorizationModePersonServer {
-		act.unsupported = &SupervisionCompositionError{reason: "resource_interaction"}
 	}
 	return server.supervise(response, request, act)
 }

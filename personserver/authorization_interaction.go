@@ -15,6 +15,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 var (
@@ -128,6 +129,12 @@ type PendingAuthorizationRecord struct {
 	// started for, in the namespace of Resource. A withdrawn resource token
 	// ends the request with revoked. A record without it is not checked.
 	ResourceTokenJTI string
+	// Supervision is the allow of the supervisor, or of the person it asked,
+	// for a supervised Agent's request that waits for the Resource's own
+	// interaction. The Person Server then issues within it when the Resource
+	// returns the person, and the host makes no consent decision. It is zero
+	// for a request no supervisor decided.
+	Supervision SupervisedAllow
 }
 
 // AuthorizationApproval is the canonical host decision and PS-issued token
@@ -522,6 +529,17 @@ func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error
 			return fmt.Errorf("personserver: pending Resource interaction: %w", err)
 		}
 	}
+	if record.Supervision != (SupervisedAllow{}) {
+		if record.Supervision.SDI == "" || record.Supervision.Supervisor.Issuer == "" ||
+			record.ResourceInteraction == (aauth.ResourceInteraction{}) {
+			return errors.New("personserver: a supervised pending authorization waits for a Resource interaction under a decision")
+		}
+		if record.Supervision.Scope != "" {
+			if _, err := supervision.ParseScope(record.Supervision.Scope); err != nil {
+				return fmt.Errorf("personserver: pending authorization supervision scope: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -572,10 +590,23 @@ func (server *Server) beginAuthorizationInteraction(
 	if !expiresAt.After(server.clock.Now()) {
 		return ErrPendingAuthorizationExpired
 	}
+	// A request a supervisor allowed proceeds under that allow. Completing
+	// a decision the Agent waits for at its supervised pending URL keeps that
+	// URL's reference, so the Agent polls one URL throughout.
+	var supervised SupervisedAllow
+	if verdict := supervisionVerdictFrom(request.Context()); verdict != nil {
+		supervised = SupervisedAllow{
+			Supervisor: verdict.supervisor, SDI: verdict.sdi, Scope: verdict.decision.Scope, ExpiresAt: verdict.decision.ExpiresAt,
+		}
+	}
+	completion := supervisionCompletionFrom(request.Context())
 	for attempt := 0; attempt < 3; attempt++ {
 		id, err := interaction.GeneratePendingReference(nil)
 		if err != nil {
 			return fmt.Errorf("personserver: generate pending authorization identifier: %w", err)
+		}
+		if completion != nil {
+			id = completion.reference
 		}
 		code, err := interaction.GenerateCode(nil)
 		if err != nil {
@@ -609,7 +640,7 @@ func (server *Server) beginAuthorizationInteraction(
 			Capabilities:          append([]string(nil), authorization.Capabilities...),
 			BudgetOffer:           cloneBudgetValue(authorization.Budget),
 			CreatedAt:             createdAt, ExpiresAt: expiresAt, RetryAfter: policy.RetryAfter,
-			ResourceTokenJTI: resourceToken.JTI,
+			ResourceTokenJTI: resourceToken.JTI, Supervision: supervised,
 		}
 		if resourceToken.Interaction != nil {
 			record.ResourceInteraction = *resourceToken.Interaction
@@ -637,7 +668,7 @@ func (server *Server) beginAuthorizationInteraction(
 			createErr = server.authorizationInteractions.CreatePendingAuthorization(request.Context(), record)
 		}
 		if createErr != nil {
-			if errors.Is(createErr, ErrPendingAuthorizationConflict) {
+			if errors.Is(createErr, ErrPendingAuthorizationConflict) && completion == nil {
 				continue
 			}
 			return createErr
@@ -755,8 +786,49 @@ func (server *Server) ResumeAuthorizationInteraction(ctx context.Context, refere
 }
 
 // ApproveAuthorizationInteraction mints and durably retains the exact PS auth
-// token selected through a separately authenticated host decision.
+// token selected through a separately authenticated host decision. A request
+// a supervisor allowed is not the host's to decide: it returns
+// ErrSupervisedAuthorization, and the Person Server issues within the allow
+// itself when the Resource returns the person.
 func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value AuthorizationInteraction, decision AuthorizationDecision) error {
+	if value.Supervised() {
+		return ErrSupervisedAuthorization
+	}
+	return server.approveAuthorizationInteraction(ctx, value, decision)
+}
+
+// ErrSupervisedAuthorization reports a host decision attempted on a request
+// that a supervisor, or the person it asked, already allowed (Supervision:
+// a PS with an SS configured for an Agent makes no supervision decision of
+// its own for that Agent).
+var ErrSupervisedAuthorization = errors.New("personserver: the supervisor decided this authorization")
+
+// Supervised reports whether a supervisor, or the person it asked, allowed
+// this request before the Resource's own interaction. The host shows no
+// consent for it: ReceiveResourceInteractionCallback issues the auth token.
+func (value AuthorizationInteraction) Supervised() bool {
+	return value.record.Supervision.SDI != ""
+}
+
+// supervisedAuthorizationDecision is the decision a retained supervised allow
+// makes: the scope it narrowed to, or all that was requested, the Resource's
+// Budget offer as offered, and the longest lifetime, which issuance bounds by
+// every token and by the allow's exp.
+func supervisedAuthorizationDecision(record PendingAuthorizationRecord) (AuthorizationDecision, error) {
+	scopes := append([]string(nil), record.Scopes...)
+	if record.Supervision.Scope != "" {
+		narrowed, err := supervision.ParseScope(record.Supervision.Scope)
+		if err != nil {
+			return AuthorizationDecision{}, err
+		}
+		scopes = narrowed
+	}
+	return AuthorizationDecision{
+		Scopes: scopes, Lifetime: aauth.MaximumAuthTokenLifetime, Budget: cloneBudgetValue(record.BudgetOffer),
+	}, nil
+}
+
+func (server *Server) approveAuthorizationInteraction(ctx context.Context, value AuthorizationInteraction, decision AuthorizationDecision) error {
 	if err := server.validateAuthorizationInteraction(ctx, value); err != nil {
 		return err
 	}
@@ -828,6 +900,9 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	if !value.record.MissionExpiresAt.IsZero() && value.record.MissionExpiresAt.Before(expiresAt) {
 		expiresAt = value.record.MissionExpiresAt
 	}
+	if allowExpiresAt := value.record.Supervision.ExpiresAt; allowExpiresAt != 0 && time.Unix(allowExpiresAt, 0).Before(expiresAt) {
+		expiresAt = time.Unix(allowExpiresAt, 0).UTC()
+	}
 	if !expiresAt.After(now) {
 		return ErrPendingAuthorizationExpired
 	}
@@ -869,7 +944,22 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	if err != nil {
 		return err
 	}
-	return server.validateCanonicalAuthorizationApproval(ctx, value.record, canonical)
+	if err := server.validateCanonicalAuthorizationApproval(ctx, value.record, canonical); err != nil {
+		return err
+	}
+	if canonical.Token == compact {
+		// The token this call issued is reported once: to the supervisor
+		// that allowed it, under its sdi, or for replay to one the Agent is
+		// routed to later.
+		if verdict := value.record.Supervision.verdict(value.record.Agent); verdict != nil {
+			ctx = context.WithValue(ctx, supervisionVerdictKey{}, verdict)
+		}
+		server.reportIssued(ctx, value.record.Agent, supervision.Event{
+			Name: supervision.EventAuthTokenIssued, MissionS256: claims.MissionS256, JTI: claims.JTI,
+			Audience: claims.Audience, Scope: claims.Scope, ExpiresAt: claims.ExpiresAt, Issuer: claims.Issuer,
+		})
+	}
+	return nil
 }
 
 func (server *Server) validateCanonicalAuthorizationApproval(
@@ -1142,7 +1232,8 @@ func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bo
 		reflect.DeepEqual(left.Capabilities, right.Capabilities) && left.CreatedAt.Equal(right.CreatedAt) &&
 		left.ExpiresAt.Equal(right.ExpiresAt) && left.RetryAfter == right.RetryAfter &&
 		budgetPointersEqual(left.BudgetOffer, right.BudgetOffer) &&
-		left.ResourceInteraction == right.ResourceInteraction && left.ResourceTokenJTI == right.ResourceTokenJTI
+		left.ResourceInteraction == right.ResourceInteraction && left.ResourceTokenJTI == right.ResourceTokenJTI &&
+		left.Supervision == right.Supervision
 }
 
 func optionalAuthorizationJWKEqual(left, right jose.JWK) bool {

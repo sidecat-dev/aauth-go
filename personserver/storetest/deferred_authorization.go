@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 )
@@ -314,6 +315,11 @@ func deferredAuthorizationRecord(t testing.TB, id, code string) personserver.Pen
 		SubagentAdditionalClaims: map[string]json.RawMessage{"workload": json.RawMessage(`"worker"`)},
 		Capabilities:             []string{"interaction"}, CreatedAt: deferredAuthorizationNow,
 		ExpiresAt: deferredAuthorizationNow.Add(time.Hour), RetryAfter: time.Second,
+		ResourceInteraction: aauth.ResourceInteraction{URL: "https://resource.example/consent", Code: "resource-code"},
+		Supervision: personserver.SupervisedAllow{
+			Supervisor: personserver.Supervisor{Issuer: "https://ss.example", Subject: "person"},
+			SDI:        "d-storetest", Scope: "records.read", ExpiresAt: deferredAuthorizationNow.Add(time.Hour).Unix(),
+		},
 	}
 }
 
@@ -467,7 +473,9 @@ func requireDeferredAuthorizationRecord(t testing.TB, record personserver.Pendin
 		string(record.AgentAdditionalClaims["platform"]) != `"orchestrator"` ||
 		string(record.SubagentAdditionalClaims["workload"]) != `"worker"` ||
 		record.Agent != "aauth:local@agent.example" || record.Subagent != "aauth:local+worker@agent.example" ||
-		record.AgentTokenJTI != "parent-token" || record.SubagentTokenJTI != "child-token" {
+		record.AgentTokenJTI != "parent-token" || record.SubagentTokenJTI != "child-token" ||
+		record.ResourceInteraction.Code != "resource-code" || record.Supervision.SDI != "d-storetest" ||
+		record.Supervision.Supervisor.Issuer != "https://ss.example" || record.Supervision.Scope != "records.read" {
 		t.Fatalf("retained authorization record = %#v", record)
 	}
 }

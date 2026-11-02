@@ -83,8 +83,8 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 				v.SetBytes([]byte("changed"))
 			case v.Kind() == reflect.Bool:
 				v.SetBool(!v.Bool())
-			case v.Type() == reflect.TypeOf(personserver.FederatedSupervision{}):
-				v.Set(reflect.ValueOf(personserver.FederatedSupervision{SDI: "d-changed"}))
+			case v.Type() == reflect.TypeOf(personserver.SupervisedAllow{}):
+				v.Set(reflect.ValueOf(personserver.SupervisedAllow{SDI: "d-changed"}))
 			default:
 				v.Set(reflect.ValueOf(time.Unix(999, 0).UTC()))
 			}
@@ -179,7 +179,7 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 
 // UTC fixtures survive JSON timestamp round trips without a location mismatch.
 func federatedAuthorizationRecord() personserver.FederatedAuthorizationRecord {
-	return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", SubagentToken: "child", UpstreamToken: "upstream", InteractionCapable: true, Supervision: personserver.FederatedSupervision{Supervisor: personserver.Supervisor{Issuer: "https://ss.example", Subject: "person"}, SDI: "d-test", Scope: "records.read", ExpiresAt: 90}, Location: "https://as.example/pending/test", CreatedAt: time.Unix(10, 0).UTC(), ExpiresAt: time.Unix(100, 0).UTC(), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
+	return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", SubagentToken: "child", UpstreamToken: "upstream", InteractionCapable: true, Supervision: personserver.SupervisedAllow{Supervisor: personserver.Supervisor{Issuer: "https://ss.example", Subject: "person"}, SDI: "d-test", Scope: "records.read", ExpiresAt: 90}, Location: "https://as.example/pending/test", CreatedAt: time.Unix(10, 0).UTC(), ExpiresAt: time.Unix(100, 0).UTC(), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
 }
 
 // FederatedAuthorizationQueueContract constructs a fresh store with optional

@@ -44,10 +44,17 @@ var (
 //     The host calls ReceiveResourceInteractionCallback. A callback error ends
 //     the request with the mapped polling error; otherwise the host shows its
 //     own consent and calls ApproveAuthorizationInteraction or
-//     DenyAuthorizationInteraction.
+//     DenyAuthorizationInteraction. For a supervised Agent the supervisor, or
+//     the person it asked, decided before the person was sent here, and the
+//     callback issues the auth token; the host shows no consent.
 //  3. AuthorizationCallbackURL returns where to send the browser afterwards:
 //     the Agent's own callback, with an error when the request did not
 //     complete.
+//
+// A supervised Agent's request is put to its supervisor first, as every act
+// is. An allow, or the person's allow on an ask, starts the steps above; a
+// deny ends the request. When the decision came later, the Agent keeps
+// polling its supervised pending URL, which then names this interaction.
 //
 // The configured deferred authorization store must implement
 // ResourceInteractionAuthorizationStore. Call chaining, R3 and mission-bound
@@ -284,7 +291,10 @@ func (server *Server) RedirectToResourceInteraction(
 // ReceiveResourceInteractionCallback reads the Resource's return to
 // {CallbackURL}/{reference}/{flow}; rawQuery is the callback's query without
 // its leading "?". Without an error parameter the Resource's flow completed:
-// it returns the interaction for the host's own consent step. With one, the
+// it returns the interaction for the host's own consent step, except for a
+// request a supervisor allowed (AuthorizationInteraction.Supervised), whose
+// auth token it issues within that allow before it returns; the host then
+// shows no consent. With one, the
 // pending request can no longer complete: it ends with the mapped polling
 // error (access_denied as denied, user_abandoned as abandoned,
 // interaction_expired as expired, server_error and temporarily_unavailable as
@@ -352,6 +362,17 @@ func (server *Server) ReceiveResourceInteractionCallback(
 	}
 	if failure != nil {
 		return AuthorizationInteraction{}, callbackError
+	}
+	if value.Supervised() {
+		// The supervisor's allow, or the person's on its ask, is the
+		// consent; the Person Server issues within it now.
+		decision, err := supervisedAuthorizationDecision(value.record)
+		if err != nil {
+			return AuthorizationInteraction{}, err
+		}
+		if err := server.approveAuthorizationInteraction(ctx, value, decision); err != nil {
+			return AuthorizationInteraction{}, err
+		}
 	}
 	return value, nil
 }

@@ -124,7 +124,7 @@ type FederatedAuthorizationRecord struct {
 	SubagentToken      string
 	UpstreamToken      string
 	InteractionCapable bool
-	Supervision        FederatedSupervision
+	Supervision        SupervisedAllow
 	Location           string
 	CreatedAt          time.Time
 	ExpiresAt          time.Time
@@ -137,12 +137,13 @@ type FederatedAuthorizationRecord struct {
 	Response           FederatedResponse
 }
 
-// FederatedSupervision is the allow a supervised request waits for the
-// Access Server under: the supervisor that decided, the sdi the grant is
-// reported under, and the scope and exp the allow narrowed the request to,
-// which the grant is checked against on delivery. SDI is empty for a request
-// no supervisor decided.
-type FederatedSupervision struct {
+// SupervisedAllow is the allow a retained supervised request proceeds
+// under, while it waits for the Access Server or for the Resource's own
+// interaction: the supervisor that decided, the sdi the grant is reported
+// under, and the scope and exp the allow narrowed the request to, which the
+// grant is checked against or issued within. SDI is empty for a request no
+// supervisor decided.
+type SupervisedAllow struct {
 	Supervisor Supervisor
 	SDI        string
 	Scope      string
@@ -151,7 +152,7 @@ type FederatedSupervision struct {
 
 // verdict is the supervision decision a retained request proceeds under, or
 // nil for one no supervisor decided.
-func (retained FederatedSupervision) verdict(agent string) *supervisionVerdict {
+func (retained SupervisedAllow) verdict(agent string) *supervisionVerdict {
 	if retained.SDI == "" {
 		return nil
 	}
@@ -160,9 +161,9 @@ func (retained FederatedSupervision) verdict(agent string) *supervisionVerdict {
 	}}
 }
 
-// withFederatedSupervision marks a request that continues a retained wait
-// with the supervision decision it proceeds under.
-func withFederatedSupervision(request *http.Request, record FederatedAuthorizationRecord) *http.Request {
+// withSupervisedAllow marks a request that continues a retained wait with
+// the supervision decision it proceeds under.
+func withSupervisedAllow(request *http.Request, record FederatedAuthorizationRecord) *http.Request {
 	if verdict := record.Supervision.verdict(record.Agent); verdict != nil {
 		return withSupervisionVerdict(request, verdict)
 	}
@@ -276,9 +277,9 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 	if completion := supervisionCompletionFrom(r.Context()); completion != nil {
 		reference = completion.reference
 	}
-	var supervised FederatedSupervision
+	var supervised SupervisedAllow
 	if verdict := supervisionVerdictFrom(r.Context()); verdict != nil {
-		supervised = FederatedSupervision{
+		supervised = SupervisedAllow{
 			Supervisor: verdict.supervisor, SDI: verdict.sdi, Scope: verdict.decision.Scope, ExpiresAt: verdict.decision.ExpiresAt,
 		}
 	}
@@ -596,7 +597,7 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writeAccessServerUnreachable(out, err)
 		return
 	}
-	server.deliverFederatedAuthorization(out, withFederatedSupervision(request, record), response, resource, agent, credential, presented, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, upstream, false)
+	server.deliverFederatedAuthorization(out, withSupervisedAllow(request, record), response, resource, agent, credential, presented, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, upstream, false)
 }
 
 // federatedMission loads, at the current instant, the mission a retained
@@ -938,7 +939,7 @@ func (server *Server) endFederatedAuthorization(w http.ResponseWriter, r *http.R
 // Agent delivery. Reuse the immediate delivery checks at the actual release,
 // under the supervision decision the request proceeds under.
 func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Request, record FederatedAuthorizationRecord) {
-	r = withFederatedSupervision(r, record)
+	r = withSupervisedAllow(r, record)
 	agent, credential, err := server.verifyFederatedAgents(r.Context(), record)
 	if err != nil {
 		writeAccessServerUnreachable(w, err)
