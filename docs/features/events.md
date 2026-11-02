@@ -136,8 +136,9 @@ has no second effect.
 ## Limits
 
 From [CONFORMANCE.md](../../CONFORMANCE.md): the library ships no durable
-stores; the example's are in memory. A service supplies stores that pass the
-`agentprovider/storetest` and `resource/storetest` contracts. The hop from the
+stores. `testutil.NewEventInboxStore` and `testutil.NewProtectedEventStore`
+are in-memory stores for tests and examples. A service supplies stores that
+pass the `agentprovider/storetest` and `resource/storetest` contracts. The hop from the
 provider to the agent is your provider's own.
 
 ## Next

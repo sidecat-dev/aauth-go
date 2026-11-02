@@ -1086,6 +1086,9 @@ a body that does not match the token's `body_s256`; `403` for a Resource
 other than the subscribed one; `404` for an unknown, inactive, or exhausted
 subscription; and `202` only after your `EventInboxStore` retains the exact
 token and body. Check your store with `agentprovider/storetest.RunEventInbox`.
+`testutil.NewEventInboxStore()` is an in-memory store that passes it and
+implements `EventInboxReader`; `testutil.NewProtectedEventStore()` is the
+Resource's in-memory counterpart for public and ticketed subscriptions.
 
 Events leaves the hop from the AP to the Agent to you, but whatever carries it
 must hand the Agent the token and body bytes unchanged. Implement
@@ -1671,14 +1674,16 @@ resource.AgentIdentityConfig{
 A request under one of these schemes is verified by that scheme's verifier and
 served by `FurtherSchemes.Protected`, never by the AAuth handler. There,
 `resource.SignerFromContext` returns the scheme, the signer (a key thumbprint
-URI, a `jwks_uri` id, a `jwks` URL or an `x5u`) and the verifying key. Such a
+URI, a `self-jwt` or `jwks_uri` issuer, a `jwks` URL or an `x5u`) and the verifying key. Such a
 signer is not an AAuth Agent and carries no person or grant. AAuth requests are
 unchanged. Every `Accept-Signature-Scheme` the protected routes send, on an
 unsigned challenge or on `unsupported_scheme`, lists `jwt` and then your
 schemes in your order; `Accept-Signature-Alg` lists Ed25519, ES256 and your
 algorithms; an `hwk` or `x509` key may use them, while keys found through
-`jwks`, `jwks_uri` or `jkt-jwt` use Ed25519 or ES256. Schemes may be `hwk`, `jkt-jwt`,
-`jwks_uri`, `jwks`, `x509` and `cached`. `x509` needs an `X509` callback that returns the chain, anchors and
+`jwks`, `jwks_uri`, `self-jwt` or `jkt-jwt` use Ed25519 or ES256. Schemes may be `hwk`, `jkt-jwt`,
+`self-jwt`, `jwks_uri`, `jwks`, `x509` and `cached`. `self-jwt` needs
+`SelfJWTType`, the `typ` your deployment selects; the assertion's key comes
+from the Resource's `KeyResolver`. `x509` needs an `X509` callback that returns the chain, anchors and
 CRLs for an `x5u`. `cached` needs `Cache`, an `AssertionCache`, and `jkt-jwt`:
 the Resource then issues `Signature-Key-Cache` to a `jkt-jwt` client that
 asks, and resolves its `cached` requests. The authorization and revocation

@@ -3303,6 +3303,21 @@ the examples and guides.
 `integration/core_four_party_test.go` (Ed25519, ES256 and mixed key
 profiles), `signaturekey/jkt_jwt_external_test.go:TestJKTJWTAcceptsAnES256DurableKey`.
 
+## A thumbprint of a key without `alg`
+
+**Source:** Protocol `70d6737`, Signature Algorithms (line 2170).
+
+Signature Algorithms requires `alg` on every key AAuth conveys or references,
+and RFC 7638 hashes no `alg`. `JWK.Thumbprint` validates the key as AAuth
+uses it, so a key without `alg` is an unsupported algorithm there.
+`JWK.RFC7638Thumbprint` also takes a key without `alg`, as the RFC 7638 and
+RFC 8037 examples are, and checks its material under the algorithm its type
+and curve determine: Ed25519, ES256 for P-256, ES384 for P-384 and RS256 for
+RSA. For a key with `alg` the two agree, and no AAuth verification path calls
+the new method.
+
+**Evidence:** the conformance suite's `vector.jwk-thumbprint.no-alg`.
+
 ## A zero discovery configuration fetches from any issuer at a public HTTPS address
 
 **Source:** Signature-Key `69f5ba2`, Scheme-Specific Risks (egress); Protocol

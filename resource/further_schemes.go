@@ -21,8 +21,13 @@ import (
 // send then lists jwt followed by Schemes.
 type FurtherSchemesConfig struct {
 	// Schemes lists the accepted schemes in descending preference: any of
-	// hwk, jkt-jwt, jwks_uri, jwks, x509, and cached.
+	// hwk, jkt-jwt, self-jwt, jwks_uri, jwks, x509, and cached.
 	Schemes []signaturekey.Scheme
+	// SelfJWTType is the explicit JWT typ a self-jwt assertion must carry,
+	// which the deployment selects. It is required exactly when self-jwt is
+	// listed. The assertion's iss, dwk and kid select its key through the
+	// Resource's KeyResolver, and that key verifies the HTTP signature too.
+	SelfJWTType string
 	// Algorithms lists the algorithms, from jose.SignatureAlgorithms, that an
 	// hwk or x509 key may use. Ed25519 and ES256 are always accepted, because
 	// AAuth requires the first and recommends the second; keys of the other
@@ -51,8 +56,8 @@ type SignerPrincipal struct {
 	// it is cached; the assertion it resolved to was jkt-jwt.
 	Scheme signaturekey.Scheme
 	// Signer identifies the signer: the key's JWK Thumbprint URI for hwk, the
-	// durable key's for jkt-jwt and cached, the id for jwks_uri, the exact url
-	// for jwks, and x5u for x509.
+	// durable key's for jkt-jwt and cached, the assertion's iss for self-jwt,
+	// the id for jwks_uri, the exact url for jwks, and x5u for x509.
 	Signer string
 	// PublicKey is the key that verified the HTTP Message Signature.
 	PublicKey jose.JWK
@@ -77,12 +82,13 @@ func SignerFromContext(ctx context.Context) (SignerPrincipal, bool) {
 }
 
 type furtherSchemes struct {
-	schemes    []signaturekey.Scheme
-	algorithms []string
-	jwks       signaturekey.JWKSKeyResolver
-	x509       func(context.Context, string) (signaturekey.X509VerifyOptions, error)
-	cache      *signaturekey.AssertionCache
-	protected  http.Handler
+	schemes     []signaturekey.Scheme
+	algorithms  []string
+	selfJWTType string
+	jwks        signaturekey.JWKSKeyResolver
+	x509        func(context.Context, string) (signaturekey.X509VerifyOptions, error)
+	cache       *signaturekey.AssertionCache
+	protected   http.Handler
 }
 
 func validateFurtherSchemes(config *FurtherSchemesConfig) (*furtherSchemes, error) {
@@ -97,7 +103,7 @@ func validateFurtherSchemes(config *FurtherSchemesConfig) (*furtherSchemes, erro
 	}
 	for index, scheme := range config.Schemes {
 		switch scheme {
-		case signaturekey.SchemeHWK, signaturekey.SchemeJKTJWT, signaturekey.SchemeJWKSURI,
+		case signaturekey.SchemeHWK, signaturekey.SchemeJKTJWT, signaturekey.SchemeSelfJWT, signaturekey.SchemeJWKSURI,
 			signaturekey.SchemeJWKS, signaturekey.SchemeX509, signaturekey.SchemeCached:
 		default:
 			return nil, fmt.Errorf("aauth: Resource cannot accept %q as a further scheme", scheme)
@@ -105,6 +111,9 @@ func validateFurtherSchemes(config *FurtherSchemesConfig) (*furtherSchemes, erro
 		if slices.Contains(config.Schemes[:index], scheme) {
 			return nil, fmt.Errorf("aauth: Resource further scheme %q is duplicated", scheme)
 		}
+	}
+	if slices.Contains(config.Schemes, signaturekey.SchemeSelfJWT) != (config.SelfJWTType != "") {
+		return nil, errors.New("aauth: Resource self-jwt scheme and its JWT type must be configured together")
 	}
 	if slices.Contains(config.Schemes, signaturekey.SchemeJWKS) && config.JWKS == nil {
 		return nil, errors.New("aauth: Resource jwks scheme requires a JWKS resolver")
@@ -129,12 +138,13 @@ func validateFurtherSchemes(config *FurtherSchemesConfig) (*furtherSchemes, erro
 		}
 	}
 	return &furtherSchemes{
-		schemes:    append([]signaturekey.Scheme(nil), config.Schemes...),
-		algorithms: algorithms,
-		jwks:       config.JWKS,
-		x509:       config.X509,
-		cache:      config.Cache,
-		protected:  config.Protected,
+		schemes:     append([]signaturekey.Scheme(nil), config.Schemes...),
+		algorithms:  algorithms,
+		selfJWTType: config.SelfJWTType,
+		jwks:        config.JWKS,
+		x509:        config.X509,
+		cache:       config.Cache,
+		protected:   config.Protected,
 	}, nil
 }
 
@@ -198,6 +208,12 @@ func (server *Server) serveFurtherScheme(response http.ResponseWriter, request *
 		proof, delegation, err = prepared.VerifyJKTJWT()
 		if err == nil {
 			principal.Signer = delegation.Issuer()
+		}
+	case signaturekey.SchemeSelfJWT:
+		var assertion signaturekey.SelfJWTAssertion
+		proof, assertion, err = prepared.VerifySelfJWT(request.Context(), server.keyResolver, further.selfJWTType)
+		if err == nil {
+			principal.Signer = assertion.Issuer()
 		}
 	case signaturekey.SchemeJWKSURI:
 		proof, err = prepared.VerifyJWKSURI(request.Context(), server.keyResolver)

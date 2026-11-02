@@ -13,6 +13,23 @@ auth-token requirement. It is not a complete implementation of AAuth Core,
 HTTP Signature Keys, or the companion drafts. It does not claim official or
 certified status.
 
+Changes on 2026-11-02 (not released):
+
+- A Resource with `FurtherSchemes` can accept `self-jwt` from a client outside
+  AAuth. `SelfJWTType` names the `typ` the deployment selects; the
+  assertion's `iss`, `dwk` and `kid` select the key through the Resource's
+  `KeyResolver`, and the same key verifies the HTTP signature.
+- `jose.JWK.RFC7638Thumbprint` computes the RFC 7638 thumbprint of a key
+  without `alg`, such as the RFC 8037 example key. `Thumbprint` still refuses
+  such a key, so no AAuth verification path changed.
+- `testutil.NewEventInboxStore` and `testutil.NewProtectedEventStore` are
+  in-memory Events stores for an Agent Provider and a Resource. They pass the
+  `RunEventInbox`, `RunEventInboxReader` and `RunProtectedEvents` contracts:
+  the inbox compares a delivery with the subscribed Resource and Agent,
+  enforces `max_uses` and retains the exact bytes it hands over, and a
+  protected subscription ticket registers once. They are the stores
+  `example/events` used, now exported.
+
 Changes on 2026-10-30. A review of the MUST-level rows against the pinned
 drafts found these behaviors failing, and they now conform:
 
@@ -535,7 +552,7 @@ consent experience.
 | `jwks_uri` scheme | Implemented | Used for PS-to-AS token exchange, AP-to-PS or direct-Resource Agent-token revocation, and PS-to-Resource Auth-token revocation. Metadata and JWKS resolution are issuer-bound, time- and capacity-bounded, controlled by egress admission, and exercise same-ID rotation after the Core refresh floor. Optional `logo_uri`, `logo_dark_uri`, `documentation_uri`, `tos_uri`, and `policy_uri` values are rejected unless they are absolute `https` URLs; a query or fragment is accepted. | [`signaturekey/discovery_external_test.go`](signaturekey/discovery_external_test.go), [`accessserver/server_test.go`](accessserver/server_test.go), [`agentprovider/revocation_test.go`](agentprovider/revocation_test.go), [`personserver/agent_token_revocation_test.go`](personserver/agent_token_revocation_test.go), [`resource/agent_token_revocation_test.go`](resource/agent_token_revocation_test.go), [`personserver/revocation_test.go`](personserver/revocation_test.go), [`resource/revocation_test.go`](resource/revocation_test.go) |
 | `hwk` scheme | Implemented | Ed25519, ES256, ES384, RS256 and PS256 header keys sign and verify under their fully specified `alg`; RSA names its padding and hash. Each endpoint verifies only its `VerifyOptions.AcceptedAlgorithms` (default Ed25519 and ES256). Hosted Agent Provider enrollment and single-key refresh use it. | [`signaturekey/external_module_test.go`](signaturekey/external_module_test.go), [`signaturekey/request_external_test.go`](signaturekey/request_external_test.go), [`agentprovider/enrollment_http_test.go`](agentprovider/enrollment_http_test.go), [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go), [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go) |
 | `jkt-jwt` scheme | Partial | Implements mandatory `jkt-s256+jwt` with Ed25519 or ES256 identity and delegated keys (an ES256 durable key suits a secure enclave), thumbprint issuer binding, time and optional cache-JTI checks, and exact delegated HTTP proof. The Agent Provider refresh profile requires a JTI and enforces AP-owned exact replay. The SHA-512 variant is absent. | [`signaturekey/jkt_jwt_external_test.go`](signaturekey/jkt_jwt_external_test.go), [`agentprovider/enrollment_test.go`](agentprovider/enrollment_test.go), [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go) |
-| `self-jwt` scheme | Partial | The Events path parses `self-jwt`, resolves the Resource key selected by the Event token's `iss`, `dwk`, and `kid`, verifies the Event JWT, and verifies the accompanying HTTP Message Signature with that same key. It rejects `cnf`, wrong token type, wrong discovery role, unsupported algorithms, expiry, key-resolution failure, and a mismatched outer proof. Other self-issued token profiles are not claimed. | [`signaturekey/self_jwt_external_test.go`](signaturekey/self_jwt_external_test.go), [`agentprovider/events_test.go`](agentprovider/events_test.go), [`integration/events_public_subscription_test.go`](integration/events_public_subscription_test.go) |
+| `self-jwt` scheme | Partial | The Events path parses `self-jwt`, resolves the Resource key selected by the Event token's `iss`, `dwk`, and `kid`, verifies the Event JWT, and verifies the accompanying HTTP Message Signature with that same key. It rejects `cnf`, wrong token type, wrong discovery role, unsupported algorithms, expiry, key-resolution failure, and a mismatched outer proof. A Resource accepts it from clients outside AAuth through `FurtherSchemesConfig.SelfJWTType`. Other self-issued token profiles are not claimed. | [`signaturekey/self_jwt_external_test.go`](signaturekey/self_jwt_external_test.go), [`agentprovider/events_test.go`](agentprovider/events_test.go), [`integration/events_public_subscription_test.go`](integration/events_public_subscription_test.go) |
 | `jwks` scheme | Implemented | The HTTPS JWKS `url` is the signer identity, compared byte for byte; `HTTPKeyResolver` fetches it with the same egress checks, cache and one-minute refresh floor as `jwks_uri`. No role uses it yet. | [`signaturekey`](signaturekey) |
 | `x509` scheme | Implemented | The host supplies the PEM chain, trust anchors and CRLs; chain and revocation are checked before the thumbprint and signature. An RSA end-entity certificate is `unsupported_algorithm`. No role uses it yet. | [`signaturekey`](signaturekey) |
 | `cached` scheme and Signature-Key-Cache | Implemented | The verifier issues sealed, unpredictable identifiers, never for a self-jwt, an assertion without `jti`, or one with more than 24 hours left; an unknown identifier is `cache_miss` and a held assertion past `exp` is `expired_jwt`. `CachingCredential` presents an identifier only after one is issued and falls back on `cache_miss`. No role uses it yet. | [`signaturekey`](signaturekey) |

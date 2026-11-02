@@ -412,6 +412,36 @@ func (key JWK) Thumbprint() (string, error) {
 	return rawURL.EncodeToString(digest[:]), nil
 }
 
+// RFC7638Thumbprint returns the RFC 7638 SHA-256 thumbprint of a public key
+// that may lack alg, such as the RFC 7638 and RFC 8037 example keys.
+// Thumbprint validates a key as AAuth uses it, which requires alg. A key
+// without alg is checked here under the algorithm its type and curve
+// determine: Ed25519 for an Ed25519 OKP key, ES256 for P-256, ES384 for P-384
+// and RS256 for RSA, whose padding does not change the key. For a key with
+// alg the two methods agree.
+func (key JWK) RFC7638Thumbprint() (string, error) {
+	if key.Alg == "" {
+		key.Alg = impliedSignatureAlgorithm(key.Kty, key.Crv)
+	}
+	return key.Thumbprint()
+}
+
+// impliedSignatureAlgorithm returns the one supported algorithm a key type and
+// curve determine, or empty when they determine none.
+func impliedSignatureAlgorithm(keyType, curve string) string {
+	switch {
+	case keyType == "OKP" && curve == "Ed25519":
+		return Ed25519Algorithm
+	case keyType == "EC" && curve == "P-256":
+		return ES256Algorithm
+	case keyType == "EC" && curve == "P-384":
+		return ES384Algorithm
+	case keyType == "RSA":
+		return RS256Algorithm
+	}
+	return ""
+}
+
 // ThumbprintURI returns the SHA-256 JWK Thumbprint URI used by the jkt-jwt
 // Signature-Key scheme and as the pseudonymous hwk signer identity.
 func (key JWK) ThumbprintURI() (string, error) {

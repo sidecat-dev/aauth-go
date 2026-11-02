@@ -22,6 +22,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -56,7 +57,7 @@ func run(output io.Writer) error {
 		{Issuer: agentProviderID, DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}: providerKey.PublicJWK(),
 		{Issuer: resourceID, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}:   resourceKey.PublicJWK(),
 	}
-	providerStore := newProviderEventStore()
+	providerStore := testutil.NewEventInboxStore()
 	eventIDs := []string{"event-1", "event-protected"}
 	provider, err := agentprovider.New(agentprovider.Config{
 		Issuer: agentProviderID, SigningKey: providerKey, Clock: clock,
@@ -84,7 +85,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	resourceStore := newResourceEventStore()
+	resourceStore := testutil.NewProtectedEventStore()
 	eventService, err := resource.NewEventService(resource.EventServiceConfig{
 		Issuer: resourceID, SigningKey: resourceKey, KeyResolver: keys, Clock: clock,
 		SubscriptionEndpoint: resourceID + "/events/subscribe",
