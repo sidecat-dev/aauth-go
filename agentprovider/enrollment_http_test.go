@@ -166,6 +166,84 @@ func TestSingleKeyRefreshHTTPHandlerRetainsAndReplaysExactResult(t *testing.T) {
 	}
 }
 
+// Bootstrap's single-key refresh is the hwk-signed request alone. Without
+// refresh_jti and refresh_expires_at the provider identifies it by its
+// signature: the same signed request returns the retained token, a newly
+// signed one is a new refresh, and naming only one of the members is invalid.
+func TestSingleKeyRefreshHTTPHandlerAcceptsBootstrapBareRequest(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 31, 7, 25, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	providerKey := testSigningKey(t, "single-key-bare-provider", 0xb3)
+	durable := testSigningKey(t, "single-key-bare-durable", 0xb4)
+	issued := 0
+	provider, err := agentprovider.New(agentprovider.Config{
+		Issuer: "https://ap.example", SigningKey: providerKey, Clock: clock,
+		NewID: func() string { issued++; return fmt.Sprintf("single-key-bare-%d", issued) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := agentprovider.NewEnrollmentService(agentprovider.EnrollmentServiceConfig{
+		Provider: provider,
+		Store:    newMemoryEnrollmentStore(),
+		Enroll: func(context.Context, agentprovider.EnrollmentRequest) (agentprovider.EnrollmentDecision, error) {
+			return agentprovider.EnrollmentDecision{Agent: "aauth:reference@ap.example"}, nil
+		},
+		Refresh: func(_ context.Context, request agentprovider.RefreshRequest) (agentprovider.RefreshDecision, error) {
+			return agentprovider.RefreshDecision{PersonServer: request.RequestedPersonServer, Lifetime: 30 * time.Minute}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment := httptest.NewRecorder()
+	service.EnrollmentHandler().ServeHTTP(enrollment, signedEnrollmentHTTPRequest(t, durable, clock))
+	if enrollment.Code != http.StatusCreated {
+		t.Fatalf("enrollment = %d %s", enrollment.Code, enrollment.Body.String())
+	}
+	body := `{"ps":"https://ps.example","evidence":{}}`
+	signed := signedSingleKeyRefreshHTTPRequest(t, durable, clock, body)
+	headers := signed.Header.Clone()
+	first := httptest.NewRecorder()
+	service.SingleKeyRefreshHandler().ServeHTTP(first, signed)
+	if first.Code != http.StatusOK || first.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("bare single-key refresh = %d %s", first.Code, first.Body.String())
+	}
+	var output struct {
+		AgentToken string `json:"agent_token"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := aauth.VerifyAgentToken(context.Background(), output.AgentToken, signaturekey.StaticKeyResolver{
+		{Issuer: "https://ap.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}: providerKey.PublicJWK(),
+	}, clock)
+	if err != nil || !claims.Confirmation.JWK.Equal(durable.PublicJWK()) || claims.PersonServer != "https://ps.example" {
+		t.Fatalf("bare single-key claims = %#v, %v", claims, err)
+	}
+
+	replayed := httptest.NewRequest(http.MethodPost, "https://ap.example/custom/refresh", strings.NewReader(body))
+	replayed.Header = headers
+	replay := httptest.NewRecorder()
+	service.SingleKeyRefreshHandler().ServeHTTP(replay, replayed)
+	if replay.Code != http.StatusOK || replay.Body.String() != first.Body.String() || issued != 1 {
+		t.Fatalf("exact replay = %d %s; issued=%d", replay.Code, replay.Body.String(), issued)
+	}
+
+	for _, partial := range []string{
+		`{"evidence":{},"refresh_jti":"only-the-jti"}`,
+		`{"evidence":{},"refresh_expires_at":` + fmt.Sprint(now.Add(time.Minute).Unix()) + `}`,
+		`{"evidence":{},"refresh_jti":"signature:chosen","refresh_expires_at":` + fmt.Sprint(now.Add(time.Minute).Unix()) + `}`,
+	} {
+		refused := httptest.NewRecorder()
+		service.SingleKeyRefreshHandler().ServeHTTP(refused, signedSingleKeyRefreshHTTPRequest(t, durable, clock, partial))
+		if refused.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d %s", partial, refused.Code, refused.Body.String())
+		}
+	}
+}
+
 func signedSingleKeyRefreshHTTPRequest(
 	t *testing.T,
 	durable jose.SigningKey,

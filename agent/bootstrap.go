@@ -64,8 +64,11 @@ type RefreshAgentTokenInput struct {
 }
 
 // SingleKeyRefreshAgentTokenInput requests one Agent token bound to the
-// already-enrolled durable key. RefreshJTI and RefreshExpiresAt identify the
-// exact replayable request in this repository profile.
+// already-enrolled durable key. RefreshJTI and RefreshExpiresAt are optional
+// and set together: they identify the exact request so that a lost answer can
+// be recovered with a freshly signed retry until RefreshExpiresAt. Without
+// them the request is Bootstrap's bare single-key refresh, which the Agent
+// Provider identifies by its signature, so a retry is a new refresh.
 type SingleKeyRefreshAgentTokenInput struct {
 	Agent            string
 	PersonServer     string
@@ -373,24 +376,28 @@ func (client *BootstrapClient) beginRefreshSingleKey(
 	if !json.Valid(input.Evidence) {
 		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh evidence must be valid JSON"))
 	}
-	if strings.TrimSpace(input.RefreshJTI) == "" || input.RefreshJTI != strings.TrimSpace(input.RefreshJTI) {
-		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh JTI is required without surrounding whitespace"))
-	}
-	now := client.clock.Now().UTC().Truncate(time.Second)
-	expiresAt := input.RefreshExpiresAt.UTC().Truncate(time.Second)
-	if !expiresAt.After(now) || expiresAt.After(now.Add(24*time.Hour)) {
-		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh expiry must be within 24 hours"))
+	var expiresAt int64
+	if input.RefreshJTI != "" || !input.RefreshExpiresAt.IsZero() {
+		if strings.TrimSpace(input.RefreshJTI) == "" || input.RefreshJTI != strings.TrimSpace(input.RefreshJTI) {
+			return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh JTI is required without surrounding whitespace when a refresh expiry is set"))
+		}
+		now := client.clock.Now().UTC().Truncate(time.Second)
+		expiry := input.RefreshExpiresAt.UTC().Truncate(time.Second)
+		if !expiry.After(now) || expiry.After(now.Add(24*time.Hour)) {
+			return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh expiry must be within 24 hours"))
+		}
+		expiresAt = expiry.Unix()
 	}
 	body, err := json.Marshal(struct {
 		PersonServer     string          `json:"ps,omitempty"`
 		Evidence         json.RawMessage `json:"evidence"`
-		RefreshJTI       string          `json:"refresh_jti"`
-		RefreshExpiresAt int64           `json:"refresh_expires_at"`
+		RefreshJTI       string          `json:"refresh_jti,omitempty"`
+		RefreshExpiresAt int64           `json:"refresh_expires_at,omitempty"`
 	}{
 		PersonServer:     input.PersonServer,
 		Evidence:         input.Evidence,
 		RefreshJTI:       input.RefreshJTI,
-		RefreshExpiresAt: expiresAt.Unix(),
+		RefreshExpiresAt: expiresAt,
 	})
 	if err != nil {
 		return Result[RefreshAgentTokenResult]{}, fail(operation, err)

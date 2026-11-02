@@ -813,8 +813,8 @@ and carries one opaque `evidence` value. Refresh carries optional `ps` plus one
 opaque `evidence` value, presents a durable-signed Ed25519
 `jkt-s256+jwt`, and signs the HTTP request with its delegated ephemeral key.
 Single-key refresh presents the same durable key through `hwk`, signs the HTTP
-request with it directly, and carries a signed `refresh_jti` plus
-`refresh_expires_at` for bounded exact-result recovery.
+request with it directly, and may carry a signed `refresh_jti` plus
+`refresh_expires_at` for bounded exact-result recovery (see below).
 The AP callbacks interpret evidence, assign the Agent identity, approve the
 requested PS, and decide token lifetime and additive claims. Evidence is
 opaque authenticated input, not proof of account state or attestation; the
@@ -852,7 +852,22 @@ full `RefreshAgentTokenInput`, including delegated key and delegation times. In
 the single-key profile it binds the exact signed JSON body; recovery reuses
 `SingleKeyRefreshAgentTokenInput`, including the unchanged durable key, JTI,
 and expiry. The single-key recovery window is at most 24 hours so caller input
-cannot impose unbounded retention. Both clients freshly sign the outer HTTP
+cannot impose unbounded retention.
+
+The two single-key members are optional and go together. Bootstrap line 325
+describes the single-key refresh as the `hwk`-signed request alone: the AP
+verifies the signature, looks up the enrollment by the key's thumbprint and
+issues a token with a new `exp`. It names no request identifier, unlike the
+two-key naming JWT, whose `jti` line 321 asks for. Requiring the members would
+refuse a request built from the draft, so a body without them is accepted. Its
+identity is `signature:` plus the verified request's replay key, a digest of
+its signature base and signature, and the record is retained until `created`
+plus the request's maximum age. The same signed request, replayed inside that
+window, returns the retained token; a newly signed request is a new refresh,
+whose token is bound to the same durable key. A replay gains nothing without
+that key, which is why the draft can leave single-key refresh without a
+replay identifier. A caller-chosen `refresh_jti` may not begin with
+`signature:`, and a body naming only one member is `400 invalid_request`. Both clients freshly sign the outer HTTP
 request. An exact retry returns the retained first Agent token; a changed key
 profile, proof material, or JSON body conflicts. The store returns any existing
 winner first, then atomically refuses a first commit when its trusted clock
@@ -2151,7 +2166,11 @@ signing key, not a general resolver, because a sub-agent's `iss` must equal its
 parent's. Bootstrap says a sub-agent's `exp` should not exceed, or is no later
 than, the parent's; the provider caps a longer requested lifetime at the
 parent's `exp` rather than refusing it. The host supplies the discriminator and
-owns its uniqueness. The hosted handler accepts the draft's illustrative `jwk`
+owns its uniqueness. Bootstrap line 376 has the AP use its own discriminator
+when the parent offered none or the parent's collides, so `SubagentHandler`
+passes an empty `SubagentRequest.Discriminator` to policy, and the
+`SubagentDecision` must name the final one; `IssueSubagent` refuses an empty
+discriminator rather than invent a name the host has not recorded. The hosted handler accepts the draft's illustrative `jwk`
 and `discriminator` members, ignores other members rather than letting them
 reach the token, and answers a sub-agent signer or policy refusal with
 `403 subagent_denied`; Bootstrap defines no error codes for this request.

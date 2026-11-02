@@ -51,20 +51,16 @@ func (service *EnrollmentService) RefreshSingleKey(
 			return RefreshRecord{}, fmt.Errorf("%w: requested Person Server: %v", ErrInvalidRefreshRequest, err)
 		}
 	}
-	if strings.TrimSpace(input.RefreshJTI) == "" || input.RefreshJTI != strings.TrimSpace(input.RefreshJTI) {
-		return RefreshRecord{}, fmt.Errorf("%w: refresh_jti is required without surrounding whitespace", ErrInvalidRefreshRequest)
-	}
-	verifiedAt := proof.VerifiedAt().UTC().Truncate(time.Second)
-	requestExpiresAt := time.Unix(input.RefreshExpiresAt, 0).UTC()
-	if !requestExpiresAt.After(verifiedAt) || requestExpiresAt.After(verifiedAt.Add(maximumSingleKeyRefreshWindow)) {
-		return RefreshRecord{}, fmt.Errorf("%w: refresh_expires_at must be within 24 hours after verification", ErrInvalidRefreshRequest)
+	requestJTI, requestExpiresAt, err := singleKeyRequestIdentity(proof, input)
+	if err != nil {
+		return RefreshRecord{}, err
 	}
 
 	requestDigest := singleKeyRefreshRequestSHA256(exactBody)
-	retained, err := service.store.LoadRefresh(ctx, identity, input.RefreshJTI)
+	retained, err := service.store.LoadRefresh(ctx, identity, requestJTI)
 	if err == nil {
 		if retained.Identity != identity || retained.Profile != RefreshProfileSingleKey ||
-			retained.RequestJTI != input.RefreshJTI || retained.RequestSHA256 != requestDigest ||
+			retained.RequestJTI != requestJTI || retained.RequestSHA256 != requestDigest ||
 			retained.PersonServer != input.PersonServer || !retained.Confirmation.Equal(identityKey) ||
 			!retained.RequestExpiresAt.Equal(requestExpiresAt) || retained.AgentToken == "" {
 			return RefreshRecord{}, ErrRefreshConflict
@@ -110,7 +106,7 @@ func (service *EnrollmentService) RefreshSingleKey(
 	candidate := RefreshRecord{
 		Identity:         identity,
 		Profile:          RefreshProfileSingleKey,
-		RequestJTI:       input.RefreshJTI,
+		RequestJTI:       requestJTI,
 		RequestSHA256:    requestDigest,
 		Agent:            enrollment.Agent,
 		PersonServer:     decision.PersonServer,
@@ -128,6 +124,40 @@ func (service *EnrollmentService) RefreshSingleKey(
 	}
 	return retained, nil
 }
+
+// singleKeyRequestIdentity returns the identity and retention bound of one
+// single-key refresh. Bootstrap's single-key refresh is the hwk-signed request
+// alone and names no request identifier, so a body without refresh_jti and
+// refresh_expires_at is identified by its own verified HTTP signature and kept
+// until that signature could no longer verify: an exact replay inside the
+// signature window returns the retained token. A body that names both chooses
+// its identity, so a caller can recover a lost answer with a freshly signed
+// request for up to 24 hours. A body that names only one is invalid.
+func singleKeyRequestIdentity(proof signaturekey.VerifiedRequest, input refreshHTTPInput) (string, time.Time, error) {
+	verifiedAt := proof.VerifiedAt().UTC().Truncate(time.Second)
+	if input.RefreshJTI == "" && input.RefreshExpiresAt == 0 {
+		requestExpiresAt := proof.Created().Add(proof.MaxAge()).UTC()
+		if !requestExpiresAt.After(verifiedAt) {
+			return "", time.Time{}, ErrRefreshExpired
+		}
+		return signatureRefreshJTIPrefix + proof.ReplayKey(), requestExpiresAt, nil
+	}
+	if strings.TrimSpace(input.RefreshJTI) == "" || input.RefreshJTI != strings.TrimSpace(input.RefreshJTI) {
+		return "", time.Time{}, fmt.Errorf("%w: refresh_jti is required without surrounding whitespace when refresh_expires_at is present", ErrInvalidRefreshRequest)
+	}
+	if strings.HasPrefix(input.RefreshJTI, signatureRefreshJTIPrefix) {
+		return "", time.Time{}, fmt.Errorf("%w: refresh_jti must not begin with %q", ErrInvalidRefreshRequest, signatureRefreshJTIPrefix)
+	}
+	requestExpiresAt := time.Unix(input.RefreshExpiresAt, 0).UTC()
+	if !requestExpiresAt.After(verifiedAt) || requestExpiresAt.After(verifiedAt.Add(maximumSingleKeyRefreshWindow)) {
+		return "", time.Time{}, fmt.Errorf("%w: refresh_expires_at must be within 24 hours after verification", ErrInvalidRefreshRequest)
+	}
+	return input.RefreshJTI, requestExpiresAt, nil
+}
+
+// signatureRefreshJTIPrefix marks a single-key refresh identity taken from the
+// request's own signature rather than a caller-chosen refresh_jti.
+const signatureRefreshJTIPrefix = "signature:"
 
 func singleKeyRefreshRequestSHA256(exactBody []byte) [sha256.Size]byte {
 	hash := sha256.New()

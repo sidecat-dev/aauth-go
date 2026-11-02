@@ -193,6 +193,11 @@ func TestSingleKeyBootstrapClientRejectsInvalidInputBeforeNetwork(t *testing.T) 
 	tests := []agent.SingleKeyRefreshAgentTokenInput{
 		{},
 		func() agent.SingleKeyRefreshAgentTokenInput { value := valid; value.RefreshJTI = ""; return value }(),
+		func() agent.SingleKeyRefreshAgentTokenInput {
+			value := valid
+			value.RefreshExpiresAt = time.Time{}
+			return value
+		}(),
 		func() agent.SingleKeyRefreshAgentTokenInput { value := valid; value.Evidence = nil; return value }(),
 		func() agent.SingleKeyRefreshAgentTokenInput {
 			value := valid

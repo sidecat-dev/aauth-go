@@ -46,6 +46,15 @@ Changes on 2026-11-02 (not released):
   as they do for a document without one; the local revocation is recorded
   first. Person Server and Access Server metadata stay required, so a `404`
   there, and a `410` or any other status anywhere, is still a failure.
+- The single-key refresh handler accepts Bootstrap's bare single-key refresh:
+  an `hwk`-signed body with `ps` and `evidence` and no `refresh_jti` or
+  `refresh_expires_at`. It used to refuse that body with `400`. Such a
+  request is identified by its own verified signature and retained until
+  that signature could no longer verify, so the same signed request returns
+  the same token. A body that names both members keeps the caller-chosen
+  identity and its recovery window of up to 24 hours. A body that names only
+  one is still `400`. `agent.SingleKeyRefreshAgentTokenInput` makes both
+  members optional the same way.
 
 Changes on 2026-10-30. A review of the MUST-level rows against the pinned
 drafts found these behaviors failing, and they now conform:
@@ -575,7 +584,7 @@ consent experience.
 | `cached` scheme and Signature-Key-Cache | Implemented | The verifier issues sealed, unpredictable identifiers, never for a self-jwt, an assertion without `jti`, or one with more than 24 hours left; an unknown identifier is `cache_miss` and a held assertion past `exp` is `expired_jwt`. `CachingCredential` presents an identifier only after one is issued and falls back on `cache_miss`. No role uses it yet. | [`signaturekey`](signaturekey) |
 | Multiple signatures | Implemented | `SignRequests` writes every Signature-Key member before signing; each signature covers `signature-key`. | [`signaturekey`](signaturekey) |
 | Negotiation and `Signature-Error` | Partial | Typed errors and core negotiation headers round-trip. A signature `created` time ahead of the verifier's validity window yields `clock_skew` and an older one `invalid_signature` (Signature-Key `69f5ba2`). A header JWT `iat` beyond the captured request time plus its signature window also yields `401` `Signature-Error: error=clock_skew`; Core verification without a request does not refuse future `iat` by itself. A Signature-Key header with no member for the verified label is `invalid_signature`. A resolved key whose type or algorithm the verifier does not implement is `unsupported_algorithm`, judged before the signature's length. Full challenge and incremental-adoption behavior remain incomplete. | [`signaturekey/error_external_test.go`](signaturekey/error_external_test.go), [`signaturekey/request_external_test.go`](signaturekey/request_external_test.go), [`signaturekey/clock_skew_external_test.go`](signaturekey/clock_skew_external_test.go), [`signaturekey/issued_at_window_external_test.go`](signaturekey/issued_at_window_external_test.go), [`resource/agent_token_skew_test.go`](resource/agent_token_skew_test.go), [`token_issued_at_external_test.go`](token_issued_at_external_test.go) |
-| Replay enforcement | Partial | Generic request-proof replay enforcement is absent. Hosted refresh consumes `(durable identity, refresh jti)` as one exact identity. The two-key profile binds the naming JWT and JSON body; the single-key profile binds its signed JSON body and bounded expiry. Both freshly sign an outer request, return the retained token on exact replay, and conflict if stable input or key profile changes. | [`agentprovider/enrollment_test.go`](agentprovider/enrollment_test.go), [`agentprovider/enrollment_http_test.go`](agentprovider/enrollment_http_test.go), [`agentprovider/storetest/enrollment.go`](agentprovider/storetest/enrollment.go), [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go), [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go) |
+| Replay enforcement | Partial | Generic request-proof replay enforcement is absent. Hosted refresh consumes `(durable identity, refresh jti)` as one exact identity. The two-key profile binds the naming JWT and JSON body; the single-key profile binds its signed JSON body and bounded expiry, and a single-key body without `refresh_jti` takes its identity from its own signature. Both freshly sign an outer request, return the retained token on exact replay, and conflict if stable input or key profile changes. | [`agentprovider/enrollment_test.go`](agentprovider/enrollment_test.go), [`agentprovider/enrollment_http_test.go`](agentprovider/enrollment_http_test.go), [`agentprovider/storetest/enrollment.go`](agentprovider/storetest/enrollment.go), [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go), [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go) |
 
 ## JOSE profile
 
