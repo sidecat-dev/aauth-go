@@ -1513,6 +1513,9 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 	if !result.Pending.MissionExpiresAt.IsZero() && result.Pending.MissionExpiresAt.Before(expiresAt) {
 		expiresAt = result.Pending.MissionExpiresAt
 	}
+	if allowExpiresAt := result.Pending.Supervision.ExpiresAt; allowExpiresAt != 0 && time.Unix(allowExpiresAt, 0).Before(expiresAt) {
+		expiresAt = time.Unix(allowExpiresAt, 0).UTC()
+	}
 	if claims.Tenant != result.Pending.Tenant || claims.Scope != strings.Join(granted, " ") ||
 		claims.IssuedAt != result.DecidedAt.Unix() || claims.ExpiresAt != expiresAt.Unix() ||
 		result.ExpiresIn != claims.ExpiresAt-claims.IssuedAt || claims.MissionS256 != result.Pending.MissionS256 || claims.Account != nil ||

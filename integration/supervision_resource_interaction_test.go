@@ -192,16 +192,18 @@ func (world *supervisedInteractionWorld) callCalendar(t *testing.T, client *clie
 // TestSupervisorAllowsAResourceInitiatedInteraction: the supervisor decides
 // the auth-token request at once, narrowing its scope; the Person Server then
 // sends the person to the Resource's own flow and, when the Resource returns
-// the person, issues within the allow. The Person Server's own policy and the
-// host's consent decide nothing, and the token is reported under the
-// decision's sdi.
+// the person, issues within the allow. The allow also brings the token's exp
+// earlier than the Person Server would issue, and the Person Server applies
+// it. The Person Server's own policy and the host's consent decide nothing,
+// and the token is reported under the decision's sdi.
 func TestSupervisorAllowsAResourceInitiatedInteraction(t *testing.T) {
 	t.Parallel()
 	world := newSupervisedInteractionWorld(t)
 	route := personserver.Supervisor{Issuer: homeSupervisorID, Subject: "home-person-1"}
+	bound := world.clock.Now().Add(3 * time.Minute).Unix()
 	host := world.addSupervisor(homeSupervisorID, true, func(request supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
 		if request.Request.Kind == supervision.KindAuthToken {
-			return decided(supervision.Decision{Verdict: supervision.VerdictAllow, Scope: "calendar.read"})
+			return decided(supervision.Decision{Verdict: supervision.VerdictAllow, Scope: "calendar.read", ExpiresAt: bound})
 		}
 		return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
 	})
@@ -224,6 +226,9 @@ func TestSupervisorAllowsAResourceInitiatedInteraction(t *testing.T) {
 	_, claims := world.authToken(t, approved)
 	if claims.Scope != "calendar.read" || claims.Audience != supervisedCalendarID {
 		t.Fatalf("auth token scope %q for %q, want the supervisor's narrowing", claims.Scope, claims.Audience)
+	}
+	if claims.ExpiresAt != bound {
+		t.Fatalf("auth token exp %d, want the supervisor's %d", claims.ExpiresAt, bound)
 	}
 	if _, err := world.people.DeliverSupervisionEvents(world.ctx, route); err != nil {
 		t.Fatal(err)
