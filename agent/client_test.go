@@ -499,7 +499,7 @@ func TestClientRejectsInvalidRoleMetadata(t *testing.T) {
 		_, err := protocol.newClient(t).PersonToken(context.Background(), agent.PersonTokenRequest{
 			PersonServer: protocol.personServerID, Resource: protocol.resourceID,
 		})
-		if err == nil || !strings.Contains(err.Error(), "metadata issuer") {
+		if err == nil || !strings.Contains(err.Error(), "issuer_mismatch") {
 			t.Fatalf("PersonToken error = %v", err)
 		}
 	})
@@ -525,7 +525,7 @@ func TestClientRejectsInvalidRoleMetadata(t *testing.T) {
 		_, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
 			Resource: protocol.resourceID, PersonToken: personToken, Scopes: []string{"records.read"},
 		})
-		if err == nil || !strings.Contains(err.Error(), "metadata issuer") {
+		if err == nil || !strings.Contains(err.Error(), "issuer_mismatch") {
 			t.Fatalf("Authorize error = %v", err)
 		}
 	})
@@ -1073,7 +1073,7 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 	}
 	if request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json" {
 		metadata := map[string]any{
-			"issuer":                protocol.personMetadataIssuer,
+			"issuer": protocol.personMetadataIssuer, "jwks_uri": protocol.personMetadataIssuer + "/.well-known/jwks.json",
 			"person_token_endpoint": protocol.personTokenEndpoint,
 			"auth_token_endpoint":   protocol.authTokenEndpoint,
 		}

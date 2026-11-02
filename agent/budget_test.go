@@ -84,7 +84,7 @@ func TestAgentCompletesAndVerifiesAProactiveBudgetExchange(t *testing.T) {
 			return jsonResponse(request, http.StatusOK, map[string]string{"resource_token": compact}), nil
 		case protocol.personServerID + "/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]string{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 			}), nil
 		case protocol.authTokenEndpoint:
@@ -176,7 +176,7 @@ func TestAgentRefusesAnAuthTokenThatBroadensTheResourceBudget(t *testing.T) {
 		requests++
 		if request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json" {
 			return jsonResponse(request, http.StatusOK, map[string]string{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 			}), nil
 		}
@@ -229,7 +229,7 @@ func TestAgentAcceptsAnAuthTokenThatOmitsAnOfferedBudget(t *testing.T) {
 	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json" {
 			return jsonResponse(request, http.StatusOK, map[string]string{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 			}), nil
 		}
@@ -715,7 +715,7 @@ func TestSubagentRequestsItsOwnBudgetAndTheParentExchangesThatGrant(t *testing.T
 			return jsonResponse(request, http.StatusOK, map[string]string{"resource_token": compact}), nil
 		case protocol.personServerID + "/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]string{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 			}), nil
 		case protocol.authTokenEndpoint:

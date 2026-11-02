@@ -891,37 +891,12 @@ func fail(operation string, cause error) error {
 	return &Error{Operation: operation, Cause: cause}
 }
 
-type personServerMetadata struct {
-	Issuer              string `json:"issuer"`
-	PersonTokenEndpoint string `json:"person_token_endpoint"`
-	AuthTokenEndpoint   string `json:"auth_token_endpoint"`
-	MissionEndpoint     string `json:"mission_endpoint"`
-	PermissionEndpoint  string `json:"permission_endpoint"`
-	AuditEndpoint       string `json:"audit_endpoint"`
-	InteractionEndpoint string `json:"interaction_endpoint"`
-	JWKSURI             string `json:"jwks_uri"`
-	LogoURI             string `json:"logo_uri"`
-	LogoDarkURI         string `json:"logo_dark_uri"`
-	DocumentationURI    string `json:"documentation_uri"`
-	TosURI              string `json:"tos_uri"`
-	PolicyURI           string `json:"policy_uri"`
-}
-
+// resourceMetadata is a Resource's verified metadata and, once a resource
+// token's Budget offer was checked against them, its parsed unit
+// declarations.
 type resourceMetadata struct {
-	Issuer                        string            `json:"issuer"`
-	AuthorizationEndpoint         string            `json:"authorization_endpoint"`
-	JWKSURI                       string            `json:"jwks_uri"`
-	AccessMode                    string            `json:"access_mode"`
-	ScopeDescriptions             map[string]string `json:"scope_descriptions"`
-	AdditionalSignatureComponents []string          `json:"additional_signature_components"`
-	R3Vocabularies                map[string]string `json:"r3_vocabularies"`
-	BudgetUnits                   json.RawMessage   `json:"budget_units"`
-	LogoURI                       string            `json:"logo_uri"`
-	LogoDarkURI                   string            `json:"logo_dark_uri"`
-	DocumentationURI              string            `json:"documentation_uri"`
-	TosURI                        string            `json:"tos_uri"`
-	PolicyURI                     string            `json:"policy_uri"`
-	parsedBudgetUnits             []budgets.UnitDeclaration
+	aauth.ResourceMetadata
+	parsedBudgetUnits []budgets.UnitDeclaration
 }
 
 func parseBudgetUnitDeclarations(raw json.RawMessage) ([]budgets.UnitDeclaration, error) {
@@ -938,62 +913,28 @@ func parseBudgetUnitDeclarations(raw json.RawMessage) ([]budgets.UnitDeclaration
 	return declarations, nil
 }
 
-func (client *Client) personServerMetadata(ctx context.Context, issuer string) (personServerMetadata, error) {
-	var metadata personServerMetadata
-	if err := client.fetchMetadata(ctx, issuer+"/.well-known/aauth-person.json", &metadata); err != nil {
-		return personServerMetadata{}, fmt.Errorf("person-server metadata: %w", err)
+func (client *Client) personServerMetadata(ctx context.Context, issuer string) (aauth.PersonServerMetadata, error) {
+	exact, err := client.fetchMetadata(ctx, issuer+"/.well-known/"+aauth.PersonDiscoveryDocument)
+	if err != nil {
+		return aauth.PersonServerMetadata{}, fmt.Errorf("person-server metadata: %w", err)
 	}
-	if metadata.Issuer != issuer {
-		return personServerMetadata{}, errors.New("person-server metadata issuer does not match requested issuer")
-	}
-	if err := aauth.ValidateEndpoint(metadata.PersonTokenEndpoint); err != nil {
-		return personServerMetadata{}, fmt.Errorf("person-server metadata person_token_endpoint: %w", err)
-	}
-	if err := aauth.ValidateEndpoint(metadata.AuthTokenEndpoint); err != nil {
-		return personServerMetadata{}, fmt.Errorf("person-server metadata auth_token_endpoint: %w", err)
-	}
-	if err := validateMetadataDisplayURIs(metadataDisplayURIs(metadata.LogoURI, metadata.LogoDarkURI, metadata.DocumentationURI, metadata.TosURI, metadata.PolicyURI)); err != nil {
-		return personServerMetadata{}, fmt.Errorf("person-server metadata: %w", err)
+	metadata, err := aauth.DecodePersonServerMetadata(exact, issuer)
+	if err != nil {
+		return aauth.PersonServerMetadata{}, fmt.Errorf("person-server metadata: %w", err)
 	}
 	return metadata, nil
 }
 
 func (client *Client) resourceMetadata(ctx context.Context, issuer string) (resourceMetadata, error) {
-	var metadata resourceMetadata
-	if err := client.fetchMetadata(ctx, issuer+"/.well-known/aauth-resource.json", &metadata); err != nil {
+	exact, err := client.fetchMetadata(ctx, issuer+"/.well-known/"+aauth.ResourceDiscoveryDocument)
+	if err != nil {
 		return resourceMetadata{}, fmt.Errorf("resource metadata: %w", err)
 	}
-	if metadata.Issuer != issuer {
-		return resourceMetadata{}, errors.New("resource metadata issuer does not match requested issuer")
-	}
-	if metadata.AuthorizationEndpoint != "" {
-		if err := aauth.ValidateEndpoint(metadata.AuthorizationEndpoint); err != nil {
-			return resourceMetadata{}, fmt.Errorf("resource metadata authorization_endpoint: %w", err)
-		}
-	}
-	if err := validateMetadataDisplayURIs(metadataDisplayURIs(metadata.LogoURI, metadata.LogoDarkURI, metadata.DocumentationURI, metadata.TosURI, metadata.PolicyURI)); err != nil {
+	metadata, err := aauth.DecodeResourceMetadata(exact, issuer)
+	if err != nil {
 		return resourceMetadata{}, fmt.Errorf("resource metadata: %w", err)
 	}
-	return metadata, nil
-}
-
-func metadataDisplayURIs(logo, logoDark, documentation, tos, policy string) map[string]string {
-	return map[string]string{
-		"logo_uri": logo, "logo_dark_uri": logoDark, "documentation_uri": documentation,
-		"tos_uri": tos, "policy_uri": policy,
-	}
-}
-
-func validateMetadataDisplayURIs(fields map[string]string) error {
-	for name, value := range fields {
-		if value == "" {
-			continue
-		}
-		if err := aauth.ValidateHTTPSURL(value); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	return nil
+	return resourceMetadata{ResourceMetadata: metadata}, nil
 }
 
 func validateRequestedBudget(requested budgets.Value, declarations []budgets.UnitDeclaration) error {
@@ -1013,21 +954,26 @@ func validateOfferedBudget(offered budgets.Value, declarations []budgets.UnitDec
 	return nil
 }
 
-func (client *Client) fetchMetadata(ctx context.Context, endpoint string, destination any) error {
+// fetchMetadata fetches one metadata document and returns its exact JSON.
+func (client *Client) fetchMetadata(ctx context.Context, endpoint string) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	request.Header.Set("Accept", "application/json")
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return responseFailure(response)
+		return nil, responseFailure(response)
 	}
-	return decodeMetadataResponse(response, destination)
+	var exact json.RawMessage
+	if err := decodeResponseJSON(response, &exact); err != nil {
+		return nil, err
+	}
+	return exact, nil
 }
 
 func (client *Client) signJSONRequest(request *http.Request, compact string) error {
@@ -1071,10 +1017,6 @@ func newJSONRequest(ctx context.Context, endpoint string, body []byte) (*http.Re
 }
 
 func decodeJSONResponse(response *http.Response, destination any) error {
-	return decodeResponseJSON(response, destination)
-}
-
-func decodeMetadataResponse(response *http.Response, destination any) error {
 	return decodeResponseJSON(response, destination)
 }
 

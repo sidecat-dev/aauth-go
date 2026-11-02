@@ -30,7 +30,7 @@ func TestClientUpdatesMissionWithExactSignedBody(t *testing.T) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": missionEndpoint,
 			}), nil
 		case request.Method == http.MethodPost && request.URL.String() == missionEndpoint+"/"+missionS256:
@@ -88,7 +88,7 @@ func TestClientCompletesMissionWithExactSignedBody(t *testing.T) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": missionEndpoint,
 			}), nil
 		case request.Method == http.MethodPost && request.URL.String() == missionEndpoint+"/"+missionS256:
@@ -431,7 +431,7 @@ func TestMissionLifecycleDoesNotRetryAmbiguousTransportFailure(t *testing.T) {
 			client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 				if request.Method == http.MethodGet {
 					return jsonResponse(request, http.StatusOK, map[string]any{
-						"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+						"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 						"auth_token_endpoint": protocol.authTokenEndpoint,
 						"mission_endpoint":    protocol.personServerID + "/missions",
 					}), nil
@@ -456,7 +456,7 @@ func newMissionLifecycleClient(
 	return protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json" {
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": protocol.personServerID + "/missions",
 			}), nil
 		}

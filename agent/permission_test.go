@@ -511,7 +511,7 @@ func (fixture *permissionFixture) roundTrip(request *http.Request) (*http.Respon
 	case fixture.protocol.personServerID + "/.well-known/aauth-person.json":
 		fixture.metadataCalls++
 		return jsonResponse(request, http.StatusOK, map[string]any{
-			"issuer": fixture.protocol.personServerID, "person_token_endpoint": fixture.protocol.personTokenEndpoint,
+			"issuer": fixture.protocol.personServerID, "jwks_uri": fixture.protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": fixture.protocol.personTokenEndpoint,
 			"auth_token_endpoint": fixture.protocol.authTokenEndpoint, "permission_endpoint": fixture.permissionEndpoint,
 		}), nil
 	case permissionEndpoint:

@@ -25,7 +25,7 @@ func TestClientBeginMissionReturnsVerifiedPendingProposal(t *testing.T) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": missionEndpoint,
 			}), nil
 		case request.Method == http.MethodPost && request.URL.String() == missionEndpoint:
@@ -104,7 +104,7 @@ func TestPendingMissionProposalSnapshotRestoresWithSameAgentAndKey(t *testing.T)
 		switch {
 		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": missionEndpoint,
 			}), nil
 		case request.Method == http.MethodPost && request.URL.String() == missionEndpoint:
@@ -166,7 +166,7 @@ func TestClientProposeMissionReportsUncertainSubmission(t *testing.T) {
 	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method == http.MethodGet {
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 				"mission_endpoint":    protocol.personServerID + "/mission",
 			}), nil
@@ -191,7 +191,7 @@ func TestClientProposeMissionTreatsServerFailureAsUncertain(t *testing.T) {
 	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method == http.MethodGet {
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 				"mission_endpoint":    protocol.personServerID + "/mission",
 			}), nil
@@ -219,7 +219,7 @@ func TestClientPollMissionProposalReportsUncertainTerminalDelivery(t *testing.T)
 		switch {
 		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 				"mission_endpoint":    protocol.personServerID + "/mission",
 			}), nil
@@ -276,7 +276,7 @@ func TestClientPollMissionProposalReturnsTypedTerminalProblems(t *testing.T) {
 				switch {
 				case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json":
 					return jsonResponse(request, http.StatusOK, map[string]any{
-						"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+						"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 						"auth_token_endpoint": protocol.authTokenEndpoint,
 						"mission_endpoint":    protocol.personServerID + "/mission",
 					}), nil
@@ -324,7 +324,7 @@ func TestClientProposeMissionDoesNotHideUnsupportedDeferredRequirement(t *testin
 	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method == http.MethodGet {
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 				"mission_endpoint":    protocol.personServerID + "/mission",
 			}), nil
@@ -361,7 +361,7 @@ func TestClientMissionProposalCarriesClarificationAndInteraction(t *testing.T) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint,
 				"mission_endpoint":    protocol.personServerID + "/mission",
 			}), nil
@@ -477,7 +477,7 @@ func TestClientPollMissionProposalReturnsVerifiedApproval(t *testing.T) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json":
 			return jsonResponse(request, http.StatusOK, map[string]any{
-				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 				"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": missionEndpoint,
 			}), nil
 		case request.Method == http.MethodPost && request.URL.String() == missionEndpoint:
@@ -550,7 +550,7 @@ func TestClientPollMissionProposalReturnsUpdatedPendingWithoutLooping(t *testing
 				switch {
 				case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json":
 					return jsonResponse(request, http.StatusOK, map[string]any{
-						"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+						"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 						"auth_token_endpoint": protocol.authTokenEndpoint,
 						"mission_endpoint":    protocol.personServerID + "/mission",
 					}), nil

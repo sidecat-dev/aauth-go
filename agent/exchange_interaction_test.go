@@ -1580,7 +1580,7 @@ func (harness *exchangeInteractionHarness) roundTrip(request *http.Request) (*ht
 	if request.Method == http.MethodGet && request.URL.String() == harness.protocol.personServerID+"/.well-known/aauth-person.json" {
 		harness.metadataCalls++
 		return jsonResponse(request, http.StatusOK, map[string]any{
-			"issuer":                harness.protocol.personServerID,
+			"issuer": harness.protocol.personServerID, "jwks_uri": harness.protocol.personServerID + "/.well-known/jwks.json",
 			"person_token_endpoint": harness.protocol.personTokenEndpoint,
 			"auth_token_endpoint":   harness.protocol.authTokenEndpoint,
 		}), nil

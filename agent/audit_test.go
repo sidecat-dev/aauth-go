@@ -335,7 +335,7 @@ func (fixture *auditFixture) roundTrip(request *http.Request) (*http.Response, e
 	case fixture.protocol.personServerID + "/.well-known/aauth-person.json":
 		fixture.metadataCalls++
 		return jsonResponse(request, http.StatusOK, map[string]any{
-			"issuer": fixture.metadataIssuer, "person_token_endpoint": fixture.protocol.personTokenEndpoint,
+			"issuer": fixture.metadataIssuer, "jwks_uri": fixture.metadataIssuer + "/.well-known/jwks.json", "person_token_endpoint": fixture.protocol.personTokenEndpoint,
 			"auth_token_endpoint": fixture.protocol.authTokenEndpoint, "audit_endpoint": fixture.auditEndpoint,
 		}), nil
 	case auditEndpoint:

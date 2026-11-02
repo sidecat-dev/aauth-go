@@ -550,7 +550,7 @@ func (protocol *testProtocol) advance(duration time.Duration) {
 
 func (protocol *testProtocol) personServerMetadata(request *http.Request) *http.Response {
 	return jsonResponse(request, http.StatusOK, map[string]any{
-		"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+		"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json", "person_token_endpoint": protocol.personTokenEndpoint,
 		"auth_token_endpoint": protocol.authTokenEndpoint,
 		"mission_endpoint":    protocol.personServerID + "/missions",
 		"audit_endpoint":      protocol.personServerID + "/audit",

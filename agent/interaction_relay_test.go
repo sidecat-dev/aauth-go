@@ -267,7 +267,7 @@ func (fixture *interactionRelayFixture) roundTrip(request *http.Request) (*http.
 	case fixture.protocol.personServerID + "/.well-known/aauth-person.json":
 		fixture.metadataCalls++
 		return jsonResponse(request, http.StatusOK, map[string]any{
-			"issuer":                fixture.protocol.personServerID,
+			"issuer": fixture.protocol.personServerID, "jwks_uri": fixture.protocol.personServerID + "/.well-known/jwks.json",
 			"person_token_endpoint": fixture.protocol.personTokenEndpoint,
 			"auth_token_endpoint":   fixture.protocol.authTokenEndpoint,
 			"interaction_endpoint":  interactionQuestionEndpoint,

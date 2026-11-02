@@ -624,7 +624,7 @@ func (transport *personTokenInteractionTransport) roundTrip(request *http.Reques
 	protocol := transport.protocol
 	if request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json" {
 		return jsonResponse(request, http.StatusOK, map[string]any{
-			"issuer":                protocol.personServerID,
+			"issuer": protocol.personServerID, "jwks_uri": protocol.personServerID + "/.well-known/jwks.json",
 			"person_token_endpoint": protocol.personTokenEndpoint,
 			"auth_token_endpoint":   protocol.authTokenEndpoint,
 		}), nil
