@@ -530,6 +530,40 @@ func TestClientRejectsInvalidRoleMetadata(t *testing.T) {
 		}
 	})
 
+	t.Run("resource metadata server failure", func(t *testing.T) {
+		protocol := newTestProtocol(t)
+		client := protocol.newClient(t)
+		personToken := mintBeginPersonToken(t, protocol, nil)
+		protocol.resourceMetadataStatus = http.StatusInternalServerError
+		request, _ := http.NewRequest(http.MethodGet, protocol.resourceID+"/records", nil)
+		_, err := client.Begin(context.Background(), agent.InitialCall{Request: request, PersonToken: personToken})
+		if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+			t.Fatalf("Begin error = %v", err)
+		}
+		if got, want := protocol.paths, []string{"/.well-known/aauth-resource.json"}; !slicesEqual(got, want) {
+			t.Fatalf("request paths = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("resource publishes no metadata", func(t *testing.T) {
+		protocol := newTestProtocol(t)
+		client := protocol.newClient(t)
+		personToken := requestImmediatePersonToken(t, client, agent.PersonTokenRequest{
+			PersonServer: protocol.personServerID, Resource: protocol.resourceID,
+		})
+		protocol.resourceMetadataStatus = http.StatusNotFound
+		protocol.paths = nil
+		_, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
+			Resource: protocol.resourceID, PersonToken: personToken, Scopes: []string{"records.read"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "authorization_endpoint is required") {
+			t.Fatalf("Authorize error = %v", err)
+		}
+		if got, want := protocol.paths, []string{"/.well-known/aauth-resource.json"}; !slicesEqual(got, want) {
+			t.Fatalf("request paths = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("display URI is not https", func(t *testing.T) {
 		for _, field := range []string{"logo_uri", "logo_dark_uri", "documentation_uri", "tos_uri", "policy_uri"} {
 			field := field
@@ -909,6 +943,7 @@ type testProtocol struct {
 	problem                       *aauth.ProblemError
 	personMetadataIssuer          string
 	resourceMetadataIssuer        string
+	resourceMetadataStatus        int
 	personTokenEndpoint           string
 	authTokenEndpoint             string
 	authorizationEndpoint         string
@@ -1088,6 +1123,9 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 		return jsonResponse(request, http.StatusOK, metadata), nil
 	}
 	if request.Method == http.MethodGet && request.URL.String() == protocol.resourceID+"/.well-known/aauth-resource.json" {
+		if protocol.resourceMetadataStatus != 0 {
+			return jsonResponse(request, protocol.resourceMetadataStatus, map[string]string{"error": "no metadata"}), nil
+		}
 		scopeDescriptions := map[string]string{"records.read": "Read records"}
 		if protocol.caseDistinctScopeNames {
 			scopeDescriptions["RECORDS.READ"] = "Read uppercase records"

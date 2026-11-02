@@ -194,16 +194,22 @@ func TestBeginReturnsOrdinaryResponseWithoutRequirement(t *testing.T) {
 	t.Parallel()
 
 	for _, scenario := range []struct {
-		name   string
-		status int
-		body   string
+		name           string
+		status         int
+		body           string
+		metadataStatus int
 	}{
 		{name: "successful response", status: http.StatusOK, body: "application result"},
 		{name: "plain unauthorized response", status: http.StatusUnauthorized, body: "ordinary application denial"},
+		{
+			name: "resource publishes no metadata", status: http.StatusOK, body: "application result",
+			metadataStatus: http.StatusNotFound,
+		},
 	} {
 		scenario := scenario
 		t.Run(scenario.name, func(t *testing.T) {
 			protocol := newTestProtocol(t)
+			protocol.resourceMetadataStatus = scenario.metadataStatus
 			personToken := mintBeginPersonToken(t, protocol, nil)
 			applicationCalls := 0
 			responseBody := &trackedBody{Reader: strings.NewReader(scenario.body)}

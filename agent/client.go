@@ -925,8 +925,21 @@ func (client *Client) personServerMetadata(ctx context.Context, issuer string) (
 	return metadata, nil
 }
 
+// resourceMetadata reads the metadata of the Resource at issuer, the
+// Resource's origin. A Resource MAY publish none (Core, Resource Metadata):
+// a 404 at its well-known URL means it has no document, so it is known by
+// its origin alone and every optional member takes its default. That leaves
+// no authorization_endpoint, no extra signature components, the default
+// access_mode and signature_window, and no companion members. Any other
+// failure, and any document that is published, is checked as before.
 func (client *Client) resourceMetadata(ctx context.Context, issuer string) (resourceMetadata, error) {
 	exact, err := client.fetchMetadata(ctx, issuer+"/.well-known/"+aauth.ResourceDiscoveryDocument)
+	if errors.Is(err, errMetadataNotPublished) {
+		if err := aauth.ValidateServerIdentifier(issuer); err != nil {
+			return resourceMetadata{}, fmt.Errorf("resource metadata: %w", err)
+		}
+		return resourceMetadata{ResourceMetadata: aauth.ResourceMetadata{Metadata: aauth.Metadata{Issuer: issuer}}}, nil
+	}
 	if err != nil {
 		return resourceMetadata{}, fmt.Errorf("resource metadata: %w", err)
 	}
@@ -954,7 +967,12 @@ func validateOfferedBudget(offered budgets.Value, declarations []budgets.UnitDec
 	return nil
 }
 
-// fetchMetadata fetches one metadata document and returns its exact JSON.
+// errMetadataNotPublished marks a 404 at a metadata document's well-known
+// URL: the server publishes no such document.
+var errMetadataNotPublished = errors.New("metadata document is not published")
+
+// fetchMetadata fetches one metadata document and returns its exact JSON. A
+// 404 is errMetadataNotPublished wrapped around the server's answer.
 func (client *Client) fetchMetadata(ctx context.Context, endpoint string) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -966,6 +984,9 @@ func (client *Client) fetchMetadata(ctx context.Context, endpoint string) ([]byt
 		return nil, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %w", errMetadataNotPublished, responseFailure(response))
+	}
 	if response.StatusCode != http.StatusOK {
 		return nil, responseFailure(response)
 	}

@@ -126,6 +126,7 @@ func (result CallResult) PendingAuthToken() (PendingAuthTokenCall, bool) {
 
 // CallAsAgent discovers the Resource's additional signature components, then
 // signs and performs one application request with the configured agent token.
+// A Resource that publishes no metadata (a 404) has none beyond the base set.
 // It does not retry a requirement or interpret an ordinary application
 // response. If the token names no Person Server and the Resource returns a
 // valid person-token requirement, the method closes that unsatisfiable
@@ -136,7 +137,7 @@ func (client *Client) CallAsAgent(ctx context.Context, original *http.Request) (
 
 // CallAsAgentWithComponents signs and performs one application request using
 // the exact additional signature components supplied by the caller. It does
-// not fetch Resource metadata, so it also works with a metadata-less Resource.
+// not fetch Resource metadata.
 // It applies the same unsatisfiable person-token requirement rule as
 // CallAsAgent.
 func (client *Client) CallAsAgentWithComponents(

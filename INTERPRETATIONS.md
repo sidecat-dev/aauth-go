@@ -3490,6 +3490,28 @@ it REQUIRED.
 **Evidence:** aauth-conformance vectors 436-439 (`vector.metadata`) once the
 adapter calls the decoders; `agent` tests.
 
+## A Resource that publishes no metadata is known by its origin
+
+**Source:** Core `70d6737`, Resource Metadata (lines 2101, 2129 and 2130).
+
+A Resource MAY publish `/.well-known/aauth-resource.json`, and one that
+publishes none still verifies identity-based access and issues resource tokens
+and interaction requirements through `401` answers. The draft does not say how
+an Agent tells "none" from a failure. The Agent client reads a `404` at the
+well-known URL as no document. It then knows the Resource by its origin, the
+identifier it would have checked `issuer` against, and gives every member its
+stated default: `access_mode` `agent-token`, the default `signature_window`,
+no `authorization_endpoint`, no extra signature components, and no R3 or
+Budgets members. A redirect, any other status, a transport error, and every
+document that is published are handled as before, so a Resource that publishes
+its metadata gets exactly the checks it had. Without an
+`authorization_endpoint`, `Authorize` refuses; R3 and Budgets requests refuse
+because nothing is advertised or declared.
+
+**Evidence:** `agent` tests (`TestBeginReturnsOrdinaryResponseWithoutRequirement`,
+`TestClientRejectsInvalidRoleMetadata`); the conformance suite's
+`agent.person-flow` against a harness Resource that serves no metadata.
+
 ## An Agent Provider revokes an Agent at the Person Servers its tokens name
 
 **Source:** Core `70d6737`, Who Revokes What (line 2696) and Revocation
