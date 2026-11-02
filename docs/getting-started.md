@@ -15,12 +15,12 @@ you have.
 mkdir hello-aauth
 cd hello-aauth
 go mod init example.com/hello-aauth
-go get gitlab.com/sidecat-dev/aauth-go@1e0b03e
+go get gitlab.com/sidecat-dev/aauth-go@6fcdb1e
 ```
 
 The library has no release tags: you build against a commit on `main`, named
 by its hash. `go get` records that commit in `go.mod` as a pseudo-version,
-`v0.0.0-20261101230727-1e0b03e4069f`. Commit `go.mod` and `go.sum` with your
+`v0.0.0-20261102114704-6fcdb1ef51b0`. Commit `go.mod` and `go.sum` with your
 code, so that every build uses the same commit. To move to a later commit, run
 `go get` again with its hash.
 
