@@ -299,3 +299,81 @@ func validateMissionBlob(blob MissionBlob) error {
 	}
 	return nil
 }
+
+// MissionReadUpdate is one accepted update as a mission read serves it: the
+// update's s256 and the unpadded base64url of the exact bytes it names.
+type MissionReadUpdate struct {
+	S256    string `json:"s256"`
+	Encoded string `json:"encoded"`
+}
+
+// MissionReadResponse is a Person Server's answer to the owning Agent's
+// signed GET of its mission's own URL, {mission_endpoint}/{mission_s256}.
+// Mission carries the same bytes the approval returned (Core, Mission
+// Identifier), and Updates the accepted updates in the order they were
+// accepted, since a party auditing a mission reads both (Core, Mission
+// Update).
+type MissionReadResponse struct {
+	S256    string              `json:"s256"`
+	Mission string              `json:"mission"`
+	Updates []MissionReadUpdate `json:"updates"`
+}
+
+// MissionRead is a verified mission read: the approved mission and its
+// accepted updates, each checked against the s256 that names it.
+type MissionRead struct {
+	Mission ApprovedMission
+	Updates []MissionUpdateDocument
+}
+
+// NewMissionReadResponse builds the answer to a mission read from the
+// approved mission and its accepted updates, in acceptance order.
+func NewMissionReadResponse(mission ApprovedMission, updates []MissionUpdateDocument) MissionReadResponse {
+	response := MissionReadResponse{S256: mission.S256, Mission: mission.Encoded, Updates: []MissionReadUpdate{}}
+	for _, update := range updates {
+		response.Updates = append(response.Updates, MissionReadUpdate{
+			S256: update.S256, Encoded: base64.RawURLEncoding.EncodeToString(update.ExactJSON),
+		})
+	}
+	return response
+}
+
+// DecodeMissionRead verifies one exact mission-read response for the mission
+// named s256: the response names that mission, its mission bytes hash to it,
+// and each update's bytes hash to the update's own s256. Unknown members are
+// ignored.
+func DecodeMissionRead(exactJSON []byte, s256 string) (MissionRead, error) {
+	if err := validateS256("mission s256", s256); err != nil {
+		return MissionRead{}, err
+	}
+	var response MissionReadResponse
+	if err := jsonstrict.RejectAmbiguousNames(exactJSON); err != nil {
+		return MissionRead{}, fmt.Errorf("aauth: decode mission read: %w", err)
+	}
+	if err := jsonstrict.RejectCaseVariants(exactJSON, &response); err != nil {
+		return MissionRead{}, fmt.Errorf("aauth: decode mission read: %w", err)
+	}
+	if err := json.Unmarshal(exactJSON, &response); err != nil {
+		return MissionRead{}, fmt.Errorf("aauth: decode mission read: %w", err)
+	}
+	if response.S256 != s256 {
+		return MissionRead{}, errors.New("aauth: mission read names a different mission")
+	}
+	mission, err := DecodeMission(response.S256, response.Mission)
+	if err != nil {
+		return MissionRead{}, err
+	}
+	read := MissionRead{Mission: mission}
+	for index, update := range response.Updates {
+		exact, err := base64.RawURLEncoding.Strict().DecodeString(update.Encoded)
+		if err != nil || base64.RawURLEncoding.EncodeToString(exact) != update.Encoded {
+			return MissionRead{}, fmt.Errorf("aauth: mission read update %d must be unpadded canonical base64url", index)
+		}
+		document, err := DecodeMissionUpdate(update.S256, exact)
+		if err != nil {
+			return MissionRead{}, fmt.Errorf("aauth: mission read update %d: %w", index, err)
+		}
+		read.Updates = append(read.Updates, document)
+	}
+	return read, nil
+}

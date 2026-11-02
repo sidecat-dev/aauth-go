@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -164,6 +165,55 @@ func (client *Client) beginMissionCompletion(
 	return result, nil
 }
 
+// MissionReadRequest names one mission this Agent owns at its Person Server.
+type MissionReadRequest struct {
+	PersonServer string
+	MissionS256  string
+}
+
+// ReadMission performs one signed, bodyless GET of the mission's own URL and
+// verifies the answer: the approved mission as the bytes its s256 names, and
+// each accepted update against its own s256, in acceptance order. A party
+// auditing a mission reads both (Core, Mission Update). A terminated mission
+// is refused with an *aauth.Problem whose code is mission_terminated.
+func (client *Client) ReadMission(ctx context.Context, input MissionReadRequest) (aauth.MissionRead, error) {
+	const operation = "read mission"
+	if client == nil {
+		return aauth.MissionRead{}, fail(operation, errors.New("client is required"))
+	}
+	if ctx == nil {
+		return aauth.MissionRead{}, fail(operation, errors.New("context is required"))
+	}
+	endpoint, err := client.missionURL(ctx, input.PersonServer, input.MissionS256)
+	if err != nil {
+		return aauth.MissionRead{}, fail(operation, err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return aauth.MissionRead{}, fail(operation, err)
+	}
+	if err := client.pendingRequestSigner()(request); err != nil {
+		return aauth.MissionRead{}, fail(operation, err)
+	}
+	response, err := client.httpClient.Do(request)
+	if err != nil {
+		return aauth.MissionRead{}, fail(operation, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return aauth.MissionRead{}, fail(operation, responseFailure(response))
+	}
+	var exact json.RawMessage
+	if err := decodeJSONResponse(response, &exact); err != nil {
+		return aauth.MissionRead{}, fail(operation, err)
+	}
+	read, err := aauth.DecodeMissionRead(exact, input.MissionS256)
+	if err != nil {
+		return aauth.MissionRead{}, fail(operation, err)
+	}
+	return read, nil
+}
+
 // postMissionLifecycle sends one signed update or completion and returns its
 // answer, whatever the status.
 func (client *Client) postMissionLifecycle(
@@ -175,27 +225,10 @@ func (client *Client) postMissionLifecycle(
 	if ctx == nil {
 		return nil, errors.New("context is required")
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	credential, err := client.personServerRequestBinding(ctx, personServer, "", "")
+	endpoint, err := client.missionURL(ctx, personServer, missionS256)
 	if err != nil {
 		return nil, err
 	}
-	if err := aauth.ValidateMissionS256(missionS256); err != nil {
-		return nil, err
-	}
-	metadata, err := client.personServerMetadata(ctx, credential.personServer)
-	if err != nil {
-		return nil, err
-	}
-	if metadata.MissionEndpoint == "" {
-		return nil, errors.New("person-server metadata mission_endpoint is required")
-	}
-	if err := aauth.ValidateEndpoint(metadata.MissionEndpoint); err != nil {
-		return nil, fmt.Errorf("person-server metadata mission_endpoint: %w", err)
-	}
-	endpoint := strings.TrimRight(metadata.MissionEndpoint, "/") + "/" + missionS256
 	request, err := newJSONRequest(ctx, endpoint, body)
 	if err != nil {
 		return nil, err
@@ -204,4 +237,30 @@ func (client *Client) postMissionLifecycle(
 		return nil, err
 	}
 	return client.httpClient.Do(request)
+}
+
+// missionURL returns {mission_endpoint}/{mission_s256} at the Person Server
+// this Agent's requests go to.
+func (client *Client) missionURL(ctx context.Context, personServer, missionS256 string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	credential, err := client.personServerRequestBinding(ctx, personServer, "", "")
+	if err != nil {
+		return "", err
+	}
+	if err := aauth.ValidateMissionS256(missionS256); err != nil {
+		return "", err
+	}
+	metadata, err := client.personServerMetadata(ctx, credential.personServer)
+	if err != nil {
+		return "", err
+	}
+	if metadata.MissionEndpoint == "" {
+		return "", errors.New("person-server metadata mission_endpoint is required")
+	}
+	if err := aauth.ValidateEndpoint(metadata.MissionEndpoint); err != nil {
+		return "", fmt.Errorf("person-server metadata mission_endpoint: %w", err)
+	}
+	return strings.TrimRight(metadata.MissionEndpoint, "/") + "/" + missionS256, nil
 }

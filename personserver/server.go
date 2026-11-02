@@ -852,6 +852,7 @@ func (server *Server) Handler() http.Handler {
 	if server.missions != nil {
 		mux.HandleFunc("POST /mission", server.handleMission)
 		mux.HandleFunc("POST /mission/{s256}", server.handleMissionAction)
+		mux.HandleFunc("GET /mission/{s256}", server.handleMissionRead)
 	}
 	if server.missionProposals != nil {
 		mux.HandleFunc("GET /mission/pending/{id}", server.handlePendingMissionProposal)

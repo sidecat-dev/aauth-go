@@ -711,6 +711,46 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 	}
 }
 
+// handleMissionRead serves the owning Agent's signed, bodyless GET of its
+// mission's own URL. The answer is the approved blob, as the bytes its s256
+// names and the approval returned (Core, Mission Identifier: the PS serves
+// those bytes wherever it later exposes the mission), and each accepted update
+// in order, since the blob alone is not what the person approved in total
+// (Core, Mission Update). Errors follow Mission Endpoint Errors: an absent
+// mission and another Agent's answer the same 404, and a terminated mission
+// is refused with mission_terminated (Core, Mission Management).
+func (server *Server) handleMissionRead(response http.ResponseWriter, request *http.Request) {
+	if !requestBodyIsEmpty(request) {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: a mission read is a bodyless GET"))
+		return
+	}
+	_, agent, proof, err := server.verifyAgentRequest(request, nil)
+	if err != nil {
+		writeAgentTokenProblem(response, err)
+		return
+	}
+	s256 := request.PathValue("s256")
+	if err := aauth.ValidateMissionS256(s256); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission identifier is invalid"))
+		return
+	}
+	record, err := server.loadActiveMission(request.Context(), s256, agent.Subject, proof.VerifiedAt().UTC())
+	if err != nil {
+		writeMissionActionProblem(response, err)
+		return
+	}
+	mission, err := validateMissionRecord(record)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	updates := make([]aauth.MissionUpdateDocument, 0, len(record.AcceptedUpdates))
+	for _, update := range record.AcceptedUpdates {
+		updates = append(updates, cloneMissionUpdateDocument(update.Document))
+	}
+	writePrivateJSON(response, http.StatusOK, aauth.NewMissionReadResponse(mission, updates))
+}
+
 func (server *Server) loadActiveMission(
 	ctx context.Context,
 	s256 string,
