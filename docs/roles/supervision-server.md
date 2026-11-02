@@ -63,6 +63,7 @@ func (standingPolicy) decide(_ context.Context, request supervisionserver.Decisi
 	if request.Request.Kind == supervision.KindMissionProposal {
 		allow.Mission = &supervision.MissionTerms{
 			Description:       request.Request.Description + "\n\nAsk before any payment.",
+			ApprovedTools:     request.Request.Tools,
 			ApprovedResources: request.Request.Resources,
 		}
 	}
@@ -112,7 +113,8 @@ Signed decisions in the log verified: 1 by https://governance.example, 3 by http
 - **`Decide`**: the answer to each request. Return exactly one of a
   `Decision` (allow, deny or ask), a `Clarify` question for the agent, or a
   `Defer` to decide later with `ResolveDecision`. An allow may narrow a
-  mission's terms, as above.
+  mission's terms, as above. The terms replace the proposal: a proposed
+  tool left out of `ApprovedTools` is not approved.
 
 Optional:
 
