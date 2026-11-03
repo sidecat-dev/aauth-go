@@ -138,5 +138,5 @@ and the Go client returns it from `Poll`:
 ## Next
 
 - [Agent](roles/agent.md): where these errors come back.
-- [Conformance scenarios](https://gitlab.com/sidecat-dev/aauth-conformance/-/tree/dbf640d/scenarios): the refusals the conformance suite checks
+- [Conformance scenarios](https://gitlab.com/sidecat-dev/aauth-conformance/-/tree/ff45ab3/scenarios): the refusals the conformance suite checks
   on the wire, scenario by scenario.
