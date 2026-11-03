@@ -6,8 +6,9 @@ small protocol packages own reusable wire semantics, role packages own role
 behavior, and applications provide policy, persistence, keys, clocks, and
 transport.
 
-[CONFORMANCE.md](CONFORMANCE.md) is the implementation-status ledger. An API
-or package name in this document is not by itself a conformance claim.
+[CONFORMANCE.md](CONFORMANCE.md) says how the conformance suite measures this
+library. An API or package name in this document is not by itself a
+conformance claim.
 
 ## Design rules
 
@@ -37,8 +38,8 @@ or package name in this document is not by itself a conformance claim.
 ## Feature boundaries
 
 Each feature below names the packages that own its values, its state and its
-calls. The behavior implemented is the subset listed in
-[CONFORMANCE.md](CONFORMANCE.md).
+calls. The feature guides under [docs/features](docs/features) give each
+feature's limits.
 
 Missions support immediate approval or a retained proposal
 for separately authenticated host review. The root package owns proposal,
@@ -392,8 +393,9 @@ that applications use.
 
 Each role package owns Core HTTP handlers or client steps plus small
 interfaces for the policy and state that role controls. The descriptions below
-state what each package owns; [CONFORMANCE.md](CONFORMANCE.md) says which of
-that behavior is implemented.
+state what each package owns; the role and feature guides under
+[docs](docs/README.md) give the limits of each, and
+[CONFORMANCE.md](CONFORMANCE.md) says what the conformance suite measures.
 Interfaces live next to the code that consumes them.
 
 ### `agentprovider`
@@ -714,8 +716,9 @@ Tests mirror the package and protocol boundaries:
 The machine-readable map in `internal/specmodel` assigns every normative source
 heading and every uppercase normative or field-presence occurrence to a
 protocol-value package, state-owning role, role-behavior package where
-applicable, dependency set, and proof seam. [CONFORMANCE.md](CONFORMANCE.md)
-then links implemented capabilities to executable tests. This gives a reader a
+applicable, dependency set, and proof seam. The conformance suite
+([CONFORMANCE.md](CONFORMANCE.md)) then grades implemented capabilities over
+the wire. This gives a reader a
 straight path from source text to Go ownership to observed behavior without
 turning documentation into a second specification.
 

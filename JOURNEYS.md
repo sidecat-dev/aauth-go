@@ -198,8 +198,8 @@ Agent enrollment and refresh, which Core leaves to Bootstrap, are under
     and `go run ./example/psconsent`.
   - Boundary: omitted capabilities on a mission-bound request use the exact
     values retained at mission approval; an explicit empty array remains
-    empty. A missionless clarification accepts `updated_request` with the
-    limits in [CONFORMANCE.md](CONFORMANCE.md). Durable adapters, AS relay,
+    empty. A missionless clarification accepts `updated_request` in one
+    direct consent round. Durable adapters, AS relay,
     `claims`, and `payment` remain missing. The safe limit is one question
     because Core gives an answer no round identifier; see `AAG-F095` in
     [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
@@ -715,8 +715,8 @@ below is explicitly a repository profile.
     (Bootstrap line 208). The host's `Enroll` and `Refresh` callbacks verify
     whatever the AP requires, carried as signed `evidence`; a refresh body may
     omit it. A durable-key change is a new enrollment and so a new Agent
-    (line 337). AP signing-key rollover is a separate gap, the AP signing-key
-    overlap row in [CONFORMANCE.md](CONFORMANCE.md).
+    (line 337). AP signing-key rollover is a separate gap: automatic
+    publication and retirement of AP keys are not implemented.
 
 - [x] **Self-hosted Agent issuance and use — Implemented source profile**
   - Flow: user-controlled Agent origin → ordinary AP metadata and JWKS → Agent
@@ -929,8 +929,7 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
     `supervisionserver/server_test.go`, `supervision/wire_test.go`.
   - Boundary: in-memory stores and one process; no independent implementation
     has been run against these roles. An `updated_request` that answers the
-    person's own question, or that brings an R3 document, is refused; see
-    [CONFORMANCE.md](CONFORMANCE.md#companion-specifications).
+    person's own question, or that brings an R3 document, is refused.
 
 ## AAuth interoperability demo profile
 
@@ -1010,6 +1009,6 @@ go test ./... -count=1
 ```
 
 Then run the examples named by the journey you want to compose. Use
-[CONFORMANCE.md](CONFORMANCE.md) for the denser claim-to-test matrix and
+[CONFORMANCE.md](CONFORMANCE.md) for what the conformance suite grades and
 [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) for version-pinned questions raised by
 implementation.

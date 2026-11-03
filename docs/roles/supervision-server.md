@@ -143,7 +143,7 @@ that side.
 
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md): an updated request that answers
+An updated request that answers
 the person's own question, or that brings an R3 document, is refused; the
 supervisor sees an R3 document only by reference; and the stores in `testutil`
 are in memory. No other

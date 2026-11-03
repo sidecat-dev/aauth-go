@@ -37,8 +37,8 @@ examples, and a test (`internal/docscheck`) fails if a quote stops matching.
   about each.
 - [USE-IN-YOUR-SERVICE.md](../USE-IN-YOUR-SERVICE.md): the full reference for
   running each role in a service.
-- [CONFORMANCE.md](../CONFORMANCE.md): what the library does and does not do,
-  and the tests that show it.
+- [CONFORMANCE.md](../CONFORMANCE.md): how the conformance suite measures the
+  library, and what its latest run says and does not say.
 - [INTERPRETATIONS.md](../INTERPRETATIONS.md): the choices made where a draft
   leaves room.
 - [SPECIFICATIONS.md](../SPECIFICATIONS.md): the draft versions implemented.

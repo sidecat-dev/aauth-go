@@ -8,7 +8,7 @@
 // [NewFederatedAuthorization] when a separate Access Server issues them.
 // [NewResourceManaged] owns opaque sessions; [NewEventService] is a separate
 // subscription and delivery service. See USE-IN-YOUR-SERVICE.md for a short
-// handler example and CONFORMANCE.md for each constructor's supported limits.
+// handler example and docs/roles/resource.md for the role guide.
 package resource
 
 import (

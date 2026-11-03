@@ -149,8 +149,7 @@ out:
 - AP signing-key rollover; see
   [Plan AP signing-key rotation](USE-IN-YOUR-SERVICE.md#plan-ap-signing-key-rotation).
 
-[CONFORMANCE.md](CONFORMANCE.md) and [JOURNEYS.md](JOURNEYS.md) list what
-the library does not implement.
+[JOURNEYS.md](JOURNEYS.md) lists what the library does not implement.
 
 Platform attestation is optional AP policy in Bootstrap (draft line 208), so
 the profile carries any attestation as signed `evidence` and the host's

@@ -152,7 +152,7 @@ has the details.
 
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md): a sub-agent as an intermediary,
+A sub-agent as an intermediary,
 chained R3, and a three-party Person Server waiting for the person's consent
 on a chained request are not implemented. An account on the upstream token is
 not carried down, and nothing is drawn from an upstream Budget.

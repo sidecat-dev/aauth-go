@@ -17,5 +17,6 @@
 // Agent-token, Agent-binding and three-party revocation, and one
 // same-Person-Server Resource call chain. It
 // also includes Person-Server-hosted interaction and baseline or Resource-held
-// delivery of the auth-token requirement. See CONFORMANCE.md for exact limits.
+// delivery of the auth-token requirement. The guides under docs/features give
+// each feature's limits.
 package aauth

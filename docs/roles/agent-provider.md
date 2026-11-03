@@ -119,8 +119,8 @@ func enroll(ctx context.Context, provider *agentprovider.Server, name string,
   ([Events](../features/events.md)).
 - **Enrollment and refresh.** `NewEnrollmentService` serves an enrollment and
   token-refresh endpoint for agents that run elsewhere, using profiles this
-  library defines, because the drafts leave the endpoints open. CONFORMANCE.md
-  lists it as Partial ([`example/bootstrap`](../../example/bootstrap)).
+  library defines, because the drafts leave the endpoints open
+  ([`example/bootstrap`](../../example/bootstrap)).
 - **Self-hosted agents.** `NewSelfHostedAgent` is an agent that is its own
   provider: its Agent tokens name the provider's own key ([`example/selfhosted`](../../example/selfhosted),
   [LOCAL-AGENT-PROFILE.md](../../LOCAL-AGENT-PROFILE.md)).

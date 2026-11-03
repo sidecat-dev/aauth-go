@@ -205,7 +205,7 @@ supervision server deciding for the agent is told the mission ended.
 
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md): the Person Server can hold a
+The Person Server can hold a
 proposal for the person, but not an update or a completion. Its own
 clarification questions about a mission, and mission-bound requests a parent
 agent makes for a sub-agent, are not implemented. Ending a mission is a Go

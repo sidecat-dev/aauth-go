@@ -157,8 +157,8 @@ An upstream token that fails only `exp` returns `expired_upstream_token`. A
 malformed or untrusted upstream token remains `invalid_upstream_token`, and a
 revoked caller is `revoked_upstream_token`. A mission on the upstream token
 also bounds the downstream tokens; an account on it is not carried down. The
-limits of call chaining itself are in the Call chaining row of
-[CONFORMANCE.md](CONFORMANCE.md#aauth-core). Evidence:
+limits of call chaining itself are in
+[docs/features/call-chaining.md](docs/features/call-chaining.md#limits). Evidence:
 `personserver/call_chaining_person_token_test.go` (an upstream person token),
 `integration/call_chaining_four_party_test.go` and
 `accessserver/upstream_external_test.go` (Access Server issuance, including a
@@ -329,7 +329,7 @@ A direct Person Server sizes a sub-agent auth token, and a one-hop call-chain
 auth token, from that token's own resource-token offer. The grant is not a
 remainder of a parent or upstream budget. Federated delegation, federated call
 chaining, and per-call R3 stay outside this path.
-[CONFORMANCE.md](CONFORMANCE.md) names the evidence and the remaining gaps.
+[docs/features/budgets.md](docs/features/budgets.md#limits) names the remaining gaps.
 
 - Document: AAuth Budgets, `draft-hardt-aauth-budgets.md`.
 - Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
@@ -345,9 +345,9 @@ chaining, and per-call R3 stay outside this path.
 
 Core has executing direct-identity, session, three-party, four-party,
 deferred-delivery, and bounded revocation paths. It is not complete. The
-source-area table in [CONFORMANCE.md](CONFORMANCE.md) is the supported-behavior
-summary; it names evidence and exclusions for each path rather than inferring
-support from exported types.
+conformance suite grades these paths over the wire
+([CONFORMANCE.md](CONFORMANCE.md)); support is not inferred from exported
+types.
 
 Core requires fully specified JOSE algorithm identifiers, requires support
 for `Ed25519` and recommends `ES256`. This implementation uses `Ed25519` by
@@ -360,19 +360,18 @@ The role paths use `jwt`, `jwks_uri`, `hwk`, and the Ed25519 and ES256
 `jkt-s256+jwt` subset of `jkt-jwt`, plus a bounded set of shared
 message-signature behavior. `jwks`, `x509` and `cached` are implemented in
 `signaturekey`, and a Resource accepts them through `FurtherSchemes`. Complete
-negotiation and generic replay enforcement remain gaps; see
-[CONFORMANCE.md](CONFORMANCE.md#http-signature-keys).
+negotiation and generic replay enforcement are not implemented.
 
 ### Companion specifications and interoperability
 
 R3, Events, Bootstrap, Budgets, Supervision, and the interoperability profile
 are pinned as first-class inputs even where behavior is absent. Supervision
 executes in the `supervision`, `supervisionserver` and `personserver`
-packages, with the limits [CONFORMANCE.md](CONFORMANCE.md) lists. The
+packages, with the limits in
+[docs/features/supervision.md](docs/features/supervision.md#limits). The
 Bootstrap enrollment and refresh endpoints and their JSON are this library's
 choices, because that draft is informational.
-[CONFORMANCE.md](CONFORMANCE.md) separates reusable Core primitives from an
-executing companion-spec path, and [ARCHITECTURE.md](ARCHITECTURE.md) assigns
+[ARCHITECTURE.md](ARCHITECTURE.md) assigns
 new behavior without moving companion semantics into the Core package.
 
 See [INTERPRETATIONS.md](INTERPRETATIONS.md) for active implementation

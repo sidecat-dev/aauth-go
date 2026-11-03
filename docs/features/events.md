@@ -135,7 +135,7 @@ has no second effect.
 
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md): the library ships no durable
+The library ships no durable
 stores. `testutil.NewEventInboxStore` and `testutil.NewProtectedEventStore`
 are in-memory stores for tests and examples. A service supplies stores that
 pass the `agentprovider/storetest` and `resource/storetest` contracts. The hop from the

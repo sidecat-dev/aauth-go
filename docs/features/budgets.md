@@ -137,7 +137,7 @@ has no `AAuth-Budget` header, `BeginBudgetCall` returns a
 
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md): a second Auth token is not
+A second Auth token is not
 reduced by what the first spent, and nothing is drawn from a parent's or an
 upstream token's Budget. Getting a Budget from a first call is three-party
 only. Shrinking a grant in place, Budgets for four-party sub-agents, an

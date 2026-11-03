@@ -2,8 +2,8 @@
 
 This file records choices needed where the pinned editor text is ambiguous or
 internally inconsistent. Explicit requirements need no interpretation and do
-not appear here; [CONFORMANCE.md](CONFORMANCE.md) says whether they are
-implemented. See [SPECIFICATIONS.md](SPECIFICATIONS.md) for the exact source
+not appear here; [CONFORMANCE.md](CONFORMANCE.md) says how the conformance
+suite grades them. See [SPECIFICATIONS.md](SPECIFICATIONS.md) for the exact source
 revisions.
 
 A question about the drafts that needs no implementation choice belongs in

@@ -13,7 +13,8 @@ Read these files before changing protocol behavior:
 4. `INTERPRETATIONS.md` — choices not settled by the source text.
 5. `SPEC-FEEDBACK.md` — questions already identified for the authors.
 
-Use `CONFORMANCE.md` to find existing behavior evidence and explicit gaps.
+Use `CONFORMANCE.md` for what the conformance suite measures, and the guides
+under `docs/features/` for each feature's limits.
 Treat the source revision named in `SPECIFICATIONS.md` as the protocol input.
 
 ## Keep the package graph clear

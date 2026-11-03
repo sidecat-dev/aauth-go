@@ -72,8 +72,8 @@ code, so that every build uses the same commit. To move to a later commit, run
   feature, and what to do about each error.
 - [USE-IN-YOUR-SERVICE.md](USE-IN-YOUR-SERVICE.md): the full reference for
   running each role in a service.
-- [CONFORMANCE.md](CONFORMANCE.md): what the library does and does not do,
-  and the tests that show it.
+- [CONFORMANCE.md](CONFORMANCE.md): how the conformance suite measures the
+  library, and what its latest run says and does not say.
 - [INTERPRETATIONS.md](INTERPRETATIONS.md): the choices made where a draft
   leaves room.
 - [SPECIFICATIONS.md](SPECIFICATIONS.md): the exact draft text implemented.
@@ -85,9 +85,9 @@ code, so that every build uses the same commit. To move to a later commit, run
 ## Status
 
 The packages implement the core AAuth protocol and HTTP Signature Keys, and
-the R3, Budgets, Events, Supervision and Bootstrap drafts, each with the
-limits listed in [CONFORMANCE.md](CONFORMANCE.md). APIs can change from one
-commit to the next.
+the R3, Budgets, Events, Supervision and Bootstrap drafts, each described,
+with its limits, in the guides under [docs/features](docs/features) and
+[docs/roles](docs/roles). APIs can change from one commit to the next.
 
 [aauth-rust](https://gitlab.com/sidecat-dev/aauth-rust) implements the same
 drafts in Rust. The two are tested against each other over HTTPS, in both

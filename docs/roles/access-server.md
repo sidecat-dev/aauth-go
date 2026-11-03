@@ -132,7 +132,7 @@ then approval.
 
 ## Limits
 
-From [CONFORMANCE.md](../../CONFORMANCE.md#aauth-core): clarification at the
+Clarification at the
 Access Server, other payment-header formats, and waiting combined with R3 or
 Budgets are not implemented.
 

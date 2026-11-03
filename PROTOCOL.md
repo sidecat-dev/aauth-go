@@ -4,8 +4,8 @@ This document is a reading map for the AAuth source family pinned in
 [SPECIFICATIONS.md](SPECIFICATIONS.md). It shows how the documents compose,
 which role owns each protocol fact, and where an implementation can observe
 the required behavior. It does not replace the source text and does not claim
-that every mapped behavior is implemented; that claim belongs in
-[CONFORMANCE.md](CONFORMANCE.md).
+that every mapped behavior is implemented; [CONFORMANCE.md](CONFORMANCE.md)
+says what the conformance suite measures.
 
 ## Source family
 
@@ -722,6 +722,5 @@ update from disappearing into prose or being counted in two packages.
 
 Implementation status remains separate. A capability is not implemented
 because it has a model entry, exported type, or unit test. It becomes
-implemented only when [CONFORMANCE.md](CONFORMANCE.md) names the executing
-path, its important negative cases, and reproducible evidence at the required
-seam.
+implemented only when it has an executing path, its important negative
+cases, and reproducible evidence at the required seam.

@@ -331,8 +331,7 @@ The HTTP resolver supports multiple published keys and selects the token
 header's `kid`; it does not try every key. For an overlap window, your host
 must publish both old and new public keys at the discovered `jwks_uri`, retaining
 the old key for tokens you still intend to accept. Automatic publication and
-retirement are not implemented; see the AP signing-key overlap row in
-[CONFORMANCE.md](CONFORMANCE.md).
+retirement are not implemented.
 The [rotation test](integration/agentprovider_rotation_test.go) demonstrates
 single-key replacement, cached verification, a host-published overlap set and
 retirement after refresh.
@@ -342,8 +341,7 @@ retirement after refresh.
 The table below collects the current composition limits. Support for two
 features separately does not establish support for their combination; the
 linked tests identify the combinations that execute. Full R3 compliance
-remains the named **R3-FULL-COMPLIANCE** gap in
-[CONFORMANCE.md](CONFORMANCE.md#companion-specifications).
+is not claimed; see [docs/features/r3.md](docs/features/r3.md#limits).
 
 A single Resource can serve free and priced routes. Set
 `BudgetConfig.Metered` to select priced routes; `nil` requires a Budget on
@@ -963,7 +961,7 @@ Policy sees both identities: `PersonTokenRequest.Agent` and
 `SubagentAdditionalClaims`. The AS receives both as `AuthorizationRequest.Agent`
 and `Subagent`. Limits: one level only, missionless only for AS waits, no
 sub-agent call chaining, and no cascade from the parent's Agent-token
-revocation to the child's credentials. See [CONFORMANCE.md](CONFORMANCE.md) and
+revocation to the child's credentials. See
 [the interpretations](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery).
 
 ## Chain a call through an Access Server
@@ -1262,7 +1260,7 @@ it as `Retry-After`, recording nothing, so the Person Server sends the request
 again later. `testutil.NewSupervisorStore` and
 `testutil.NewSupervisionStore` are in-memory stores for each side.
 
-The limits are in [CONFORMANCE.md](CONFORMANCE.md#companion-specifications):
+The limits are in [docs/features/supervision.md](docs/features/supervision.md#limits):
 among them, an `updated_request` that answers the person's own question, or
 that brings an R3 document, is refused.
 
