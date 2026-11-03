@@ -105,18 +105,6 @@ The acceptance tests run separate TLS processes and restart the hosted
 process. Public store contracts cover enrollment, mission lifecycle, atomic
 mission-plus-R3 issuance, R3 documents, R3 issuance, and Budget charging.
 
-## External qualification
-
-On 2026-09-01, revision
-`7bad00b7ae6dfe3b093157c8e63ddb8540ee78b2` was fetched, tested, vetted, and
-built on a clean Ubuntu 24.04 host with Go 1.26.2. A separate laptop Agent then
-completed the walkthrough over public-network TLS. After the host restarted
-and the Agent's final result cache was removed, the same request recovered
-`record-1` with one connector call and a zero Budget remainder. Revoking the
-Agent token made the next request fail `invalid_agent_token` before connector
-dispatch; the connector call count remained one. The disposable host was
-destroyed after the run.
-
 ## Boundary
 
 This is an executable integration walkthrough, not production hosting

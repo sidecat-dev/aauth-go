@@ -48,6 +48,7 @@ The documents have different authority:
 | AAuth Events | Resource-to-Agent-Provider subscription and event delivery | Normative companion protocol; AP-to-agent delivery is deliberately unspecified |
 | AAuth Budgets | Budget offers, narrowing, hard-cap accounting, feedback, and usage queries | Normative companion protocol |
 | AAuth Bootstrap Guidance | Platform-specific enrollment and refresh patterns | Informational guidance, not a new conformance surface |
+| AAuth Supervision | A supervision server that decides each act an Agent asks its Person Server to authorize | Normative companion protocol |
 | AAuth Interoperability Demo Profile | Five complete demonstrations that implementations should be able to compose | Informational profile using the protocols above |
 
 ## Roles and identities
@@ -108,10 +109,9 @@ Every token uses a fully specified asymmetric `alg`, a distinct `typ`, and a
 
 Core does not settle whether every Resource token must carry `scope`: its
 payload list includes it, while Core permits a companion claim to replace it
-and R3 treats it as optional. The model's disposition is that Core scope is
-optional or replaceable. The target implementation must handle every
-authorization-bearing companion claim explicitly before a role makes a policy
-or serving decision.
+and R3 treats it as optional. This library treats Core scope as optional or
+replaceable, and handles every authorization-bearing companion claim
+explicitly before a role makes a policy or serving decision.
 
 ### HTTP fields and discovery
 
@@ -245,9 +245,8 @@ before delivery returns one typed expiry instead of unusable credentials; its
 already-retained Mission and token records remain expired history and are not
 disclosed through the pending URL.
 Terminal polling is otherwise one-shot: the store records delivery before
-returning the winning result, and later polls receive `410`. Core defines no
-stable identity for recovering a lost initial `202` (`AAG-F012`, since withdrawn) or terminal
-response (`AAG-F004`, since withdrawn). This approval-only profile does not implement mission
+returning the winning result, and later polls receive `410`. A lost initial
+`202` or terminal response is recovered by a fresh request. This approval-only profile does not implement mission
 clarification. It also requires the original proposal key until decision;
 `AAG-F105` records the unresolved renewal boundary.
 
@@ -389,9 +388,8 @@ When the Person Server returns `424 interaction_unavailable`, the Agent result
 returns the original verified URL and code for direct presentation. Once a
 relay was accepted, its pending URL reports only relay progress. The Resource's
 original pending URL remains authoritative for completing the underlying
-operation. Core names `pending` and `interacting` but does not define the
-terminal success response shape; this implementation uses `200` with the same
-one-member status document and records that choice as `AAG-F102` (since withdrawn).
+operation, and completion is signalled there. The relay's own terminal answer
+is `200` with the same one-member status document.
 
 ### Clarification during three-party consent
 
@@ -417,7 +415,7 @@ sequenceDiagram
 The Agent receives the question and optional choices as typed values, but the
 library does not render their Markdown. The host sanitizes both questions and
 answers before showing them to a person. A question has a bounded deadline.
-The current safe profile permits one round because Core gives an answer no
+This library permits one round because Core gives an answer no
 round identifier (`AAG-F095`). An exact same-state answer replay is idempotent;
 a changed replay conflicts. A signed `DELETE` cancels the active question and
 makes every later pending-URL request return `410 Gone`.
@@ -549,7 +547,7 @@ The profile's five demonstrations form one coherent progression:
 Mission approval is the first surface, not an optional decoration on an
 otherwise complete profile.
 
-The current Go mission example uses the three-party profile variant and adds
+The Go mission example uses the three-party profile variant and adds
 two Core lifecycle steps that are not separate interop-profile surfaces: one
 exact accepted update before later policy and person-accepted completion after
 protected use. The four-party example and integration path apply the same lifecycle
@@ -604,15 +602,13 @@ consuming another use. A
 bodyless event or registration covers only the base components, and its token
 carries no `body_s256`.
 
-The Events draft conflicts with itself on expired events (`MUST NOT` versus
-`SHOULD NOT`). The implementation follows the stricter normative behavior.
-
-The draft also reuses `eid` for every delivery in a subscription while telling
-the Agent to deduplicate by `(iss, eid)`. That would discard every legitimate
-event after the first. The implementation treats `eid` only as subscription context and
+Every event on a subscription carries the same `eid`; each Event token
+carries its own `jti`, and the draft makes `(iss, jti)` the deduplication key.
+The implementation treats `eid` only as subscription context and
 deduplicates an exact accepted delivery by hashing the compact Event token,
 the signed content type, and the exact payload bytes with unambiguous
-separators.
+separators; see
+[INTERPRETATIONS.md](INTERPRETATIONS.md#event-replay-identity-is-distinct-from-subscription-identity).
 
 ### Budgeted access
 
@@ -626,8 +622,8 @@ a Budget-bearing Resource token in the `401`; the host's `InitialOffer` policy
 selects one declared unit and amount rather than the library guessing among
 currencies. For a same-denomination proactive offer, the Resource may only
 lower the amount. It may instead select another denomination from its own
-`budget_units`; that establishes the Resource's new offer, while its ordering
-against the Agent request remains unresolved by `AAG-F088` (since withdrawn). In both paths the
+`budget_units`; that establishes the Resource's new offer, and later parties
+keep its denomination. In both paths the
 Person Server preserves the Resource-selected unit and scale and may only
 lower the amount; its Auth token is the signed cap. After all ordinary
 authorization checks, the Resource atomically charges the exact known cost
@@ -677,7 +673,8 @@ figure arrives, `budgets.AccountedSpend` holds the full grant; a record
 replaces that assumption and does not settle the allocation.
 `budgets.Free` applies the draft's settlement formula. A Resource whose Budget
 store implements `BudgetUsageStore` publishes `usage_endpoint` and serves a
-signed `POST /usage`. The response is not signed. A streamed response can send `reserved` in the
+signed `POST /usage`. A Resource with a signing key signs the response, and
+`budgets.PostUsageChecked` verifies it. A streamed response can send `reserved` in the
 header and `cost` in an `AAuth-Budget` trailer. The fixed-price protected path
 still commits the known cost before dispatch. `BudgetConfig.Maximum` reserves
 that bound first. `SettleBudget` after the header is written commits the spent
@@ -701,13 +698,11 @@ Choices below are recorded in detail in
 [INTERPRETATIONS.md](INTERPRETATIONS.md); questions suitable for the editors
 remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
-| Tension | Target disposition |
+| Tension | Choice in this library |
 | --- | --- |
 | Core lists Resource-token `scope`, while companion authorization may replace it | Treat `scope` as optional or replaceable; enforce co-present constraints independently |
 | R3 permits same-URI replacement but also treats URI plus hash as a permanent refetchable record (`AAG-F005`) | Published document URIs are immutable; new bytes receive a new URI and referenced bytes remain available |
-| R3 lets a broader document merely cover a request, so the AS may not know the exact requested operations (`AAG-F014` and `AAG-F014a`, both since withdrawn) | Issue an exact-request document and constrain every AS grant to its operation set |
-| Events gives two strengths for expired-token refusal | Apply `MUST NOT` |
-| Events uses subscription `eid` as a delivery deduplication key (`AAG-F058`, since resolved) | Use an exact token, signed-content-type, and payload fingerprint; retain `eid` as routing context |
+| R3 lets a broader document merely cover a request, so the AS may not know the exact requested operations | Issue an exact-request document and constrain every AS grant to its operation set |
 | Signature-Key labels `cached` an open design | Keep it opt-in and visibly provisional |
 | Bootstrap defines hosted key patterns but no portable wire or replay rule | Keep routes application-selected and document explicit AP-owned exact-result profiles rather than adding metadata fields or a generic Bootstrap package |
 | Core and Bootstrap define self-hosting, while one Core rationale paragraph forbids a self-signed Agent token (`AAG-F104`) | Implement the functional self-hosted profile without verifier exceptions and ask the editors to reconcile the rationale |

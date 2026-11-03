@@ -107,8 +107,8 @@ AAuth three-party flow complete: person-123 has records.read
   `404`, the client knows the Resource by its origin and uses the defaults:
   no extra components, no `authorization_endpoint` (so `Authorize` refuses,
   and the Resource asks for tokens with `401` answers instead), and none of
-  the R3 or Budgets members. Any other failure, and every document that is
-  published, is checked as before.
+  the R3 or Budgets members. Any other failure is an error, and a published
+  document is checked in full.
 - `Do` sends a request signed with an Auth token. `Begin` sends the first
   request with a Person token and returns the Resource's answer: a response,
   a checked `auth-token` requirement, or a request the Resource is holding.

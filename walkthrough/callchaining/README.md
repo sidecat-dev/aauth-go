@@ -151,8 +151,8 @@ The library identifies the calling Agent under step 4 from the Person Server's
 own issuance record of the upstream token, answers `revoked_upstream_token`
 when that Agent's token is revoked, and applies the `presented_token` expiry
 ceiling. Upstream Person tokens, missions/accounts, federation, deferred
-chaining, sub-agent chaining, repeated hops and cascade remain unadopted. This consumer does not claim
-full Protocol -11 conformance or interoperability with another implementation.
+chaining, sub-agent chaining, repeated hops and cascade are outside this
+walkthrough's pinned commit.
 
 Person-token bindings, discovery caches and Inventory's action counter belong
 to their processes. Restart loses them. Files retain only generated setup
@@ -174,5 +174,3 @@ GOWORK=off go vet ./...
 caller, checks one authorized consequence and both refusals, verifies actual
 network discovery, and waits for natural credential expiry. It builds the
 consumer unless `AAUTH_CALLCHAIN_BINARY` names an already built executable.
-Developer checks are author evidence. Independent installed/user acceptance
-must identify and inspect the exact executable and its observations separately.

@@ -51,31 +51,15 @@ Here `key` is the AP public key you configured, represented as a JSON Web Key
 `aauth.AgentDiscoveryDocument` is `"aauth-agent.json"`: the token's `dwk`
 claim selects that well-known document.
 
-For network discovery, use `signaturekey.NewHTTPKeyResolver`. `Client` is the
-HTTP client it fetches with and `Clock` the protocol time. `Admit` sees each
-metadata or JWKS URL before it is fetched and returns an error to refuse it.
-The zero configuration is a safe default: the system clock, a direct client,
-and `signaturekey.AdmitHTTPS`, which admits any HTTPS URL, so the resolver
-fetches the keys of any issuer at a public address. To trust only some
-issuers, admit only those, because a token names its own issuer. The
-resolver also checks each connection itself. It resolves the host, refuses
-private, loopback and link-local addresses, connects only to the address it
-checked, and never follows a redirect. To do that it dials through a copy of
-your client's `*http.Transport`, so it refuses, at construction, a client
-whose transport is another type or has a proxy or a dialer other than
-`DialContext`. Two settings change this:
-
-- For issuers at private addresses on your own network, `AllowDestination`
-  admits the addresses it returns true for, and `LookupAddresses` resolves
-  hosts the system resolver does not know.
-- For a transport that applies its own destination controls or makes no
-  connection, such as an in-memory test transport or a client that reaches
-  only your own loopback listeners, set `TransportEnforcesEgress: true`. The
-  resolver then uses the client unchanged.
-
-[Fetch issuer keys](docs/roles/resource.md#fetch-issuer-keys) compares the
-cases, and [Get started](docs/getting-started.md) runs the last one over
-loopback TLS.
+For network discovery, use `signaturekey.NewHTTPKeyResolver`. Its zero
+configuration is a safe default for issuers on the public internet: it admits
+any HTTPS issuer, refuses private, loopback and link-local destinations, and
+never follows a redirect. To trust only some issuers, set `Admit` to admit
+only those, because a token names its own issuer.
+[Fetch issuer keys](docs/roles/resource.md#fetch-issuer-keys) explains each
+setting (`Client`, `Clock`, `Admit`, `AllowDestination`, `LookupAddresses`,
+`TransportEnforcesEgress`) and when to use it, and
+[Get started](docs/getting-started.md) runs a resolver over loopback TLS.
 
 The other calls a server makes to endpoints that metadata named, such as
 revocations, supervision requests and event deliveries, take their own
@@ -137,15 +121,13 @@ also exercise the explicit empty-body requirement and a valid POST.
 
 Signed bodies are limited to 1 MiB by default. Set the Resource's
 `MaxSignedBodyBytes` and the signer's `SignOptions.MaxBodyBytes` for your
-service's limit. An oversized signed body currently returns `401 invalid_input`;
+service's limit. An oversized signed body returns `401 invalid_input`;
 discovery does not advertise the limit. `agent.Config.MaxSignedBodyBytes`
 sets the client limit. Streaming digest trailers are not implemented.
 
-This is a stricter library default, permitted by the draft's Resource component
-negotiation, rather than a universal protocol requirement. Callers that previously
-sent unsigned Resource bodies must now cover the digest and any Content-Type.
-Unconditional advertised components still apply to empty requests too.
-See the [recorded interpretation](INTERPRETATIONS.md#nonempty-request-content-is-covered-by-default).
+Covering nonempty content by default is a stricter library default, permitted
+by the draft's Resource component negotiation, rather than a universal protocol
+requirement. See the [recorded interpretation](INTERPRETATIONS.md#nonempty-request-content-is-covered-by-default).
 
 ## Add revocation and application policy
 
@@ -301,7 +283,7 @@ It does **not** verify possession of the Agent's private key on an HTTP request,
 consult a revocation store, or decide access to your operation. Use the Resource
 handler for request verification.
 
-All Go snippets execute in [the complete example](example/verifyagent).
+The Go snippets above execute in [the complete example](example/verifyagent).
 From a checkout:
 
 ```sh
@@ -349,7 +331,8 @@ The HTTP resolver supports multiple published keys and selects the token
 header's `kid`; it does not try every key. For an overlap window, your host
 must publish both old and new public keys at the discovered `jwks_uri`, retaining
 the old key for tokens you still intend to accept. Automatic publication and
-retirement are the **AP-KEY-ROLLOVER** gap in [CONFORMANCE.md](CONFORMANCE.md).
+retirement are not implemented; see the AP signing-key overlap row in
+[CONFORMANCE.md](CONFORMANCE.md).
 The [rotation test](integration/agentprovider_rotation_test.go) demonstrates
 single-key replacement, cached verification, a host-published overlap set and
 retirement after refresh.
@@ -380,17 +363,16 @@ that do not support Budget feedback.
 `BudgetStore.Charge` must accept `Cost == 0` and return the current remainder
 without increasing token or person consumption. It may establish the token's
 grant/context binding; at exhaustion it may return `ErrBudgetExhausted` with
-both result fields zero. This changes the behavioral contract even though the
-Go interface is unchanged. Rerun
+both result fields zero. Run
 [`resource/storetest.RunBudget`](resource/storetest/budget.go) against your
-adapter: it now checks zero-cost observations before spending, after spending,
+adapter: it checks zero-cost observations before spending, after spending,
 and at exhaustion, alongside binding and concurrent-cap enforcement.
 
 | Combination | Current boundary and executable evidence |
 | --- | --- |
 | Core + Budget, three or four parties | Immediate grants and replacement-grant step-up; [three-party](integration/budget_three_party_test.go) and [four-party](integration/budget_four_party_test.go) tests. |
 | R3 class + Budget | Immediate grants; denied operations report zero cost. [Three-party](integration/r3_budget_three_party_test.go) and [four-party](integration/r3_direct_four_party_test.go) tests. |
-| AS deferred approval/payment + R3 or Budget | Immediate compositions retain their existing support; a deferred result is refused. Mission-bound Core requests can wait. See [deferred federation](#continue-an-as-approval-or-payment-request). |
+| AS deferred approval/payment + R3 or Budget | Immediate compositions work; a deferred result is refused. Mission-bound Core requests can wait. See [deferred federation](#continue-an-as-approval-or-payment-request). |
 | AS deferred approval/payment + one-level sub-agent | Missionless Core waits for the parent; the grant binds the child. See [Delegate to a sub-agent](#delegate-to-a-sub-agent) and the [integration tests](integration/subagent_federated_deferred_test.go). |
 | Direct R3 + deferred Core consent | Constructor refuses this configuration; [configuration test](personserver/r3_direct_test.go). |
 | Budget + deferred Core consent | The Person Server keeps the Resource token's offer while the person decides, and `ApproveAuthorizationInteraction` mints the Budget its decision grants, which must narrow the offer. A request that did not declare the `interaction` capability is `403 user_unreachable`. [`TestBudgetAuthorizationInteractionIsARequestTimeLimit`](personserver/budget_test.go). |
@@ -1281,8 +1263,8 @@ again later. `testutil.NewSupervisorStore` and
 `testutil.NewSupervisionStore` are in-memory stores for each side.
 
 The limits are in [CONFORMANCE.md](CONFORMANCE.md#companion-specifications):
-among them, R3 and Resource-initiated interaction are refused for a
-supervised Agent.
+among them, an `updated_request` that answers the person's own question, or
+that brings an R3 document, is refused.
 
 ## Return the person after an interaction
 
@@ -1474,13 +1456,10 @@ and [Agent Provider](agentprovider/storetest) contracts and the
 The public mission fixture exposes `LoadAuthToken` and `LoadR3Issuance` for
 the observation callbacks required by `RunMission` and `RunMissionR3Issuance`.
 Use the [public-constructor contract tests](testutil/mission_contracts_test.go)
-as the wiring example; they also run from an external module.
-
-`testutil.MissionStore` and its question/relay variants now include those two
-read-only observers. Custom implementations of these test-helper interfaces
-must add them. Production adapters should implement the role interfaces and
-provide their own storetest observation callbacks; the role interfaces did
-not gain these fixture methods.
+as the wiring example; they also run from an external module. These two
+observers belong to the `testutil` fixtures, not the role interfaces: a
+production adapter implements the role interfaces and passes its own
+observation callbacks to the storetest.
 
 ## Find requests waiting for the person
 
@@ -1782,12 +1761,11 @@ transport. Changing `Issuer` alone does not make a request to
 `127.0.0.1:8080` match it. A key resolver that fetches through such a
 transport needs `TransportEnforcesEgress: true`, because the transport, not
 the resolver, decides where connections go (see
-[Verify an Agent at your HTTP endpoint](#verify-an-agent-at-your-http-endpoint)).
+[Fetch issuer keys](docs/roles/resource.md#fetch-issuer-keys)).
 [Get started](docs/getting-started.md) runs an Agent and a Resource this way.
 The [local walkthrough](walkthrough/local) shows separate TLS processes and
-certificates at its declared module pin. That pin is from before the resolver
-checked destinations, so the walkthrough's resolver omits the setting; a copy
-of its client at a current commit needs it.
+certificates at its own older module pin; a copy of its client at a current
+commit needs `TransportEnforcesEgress: true`.
 
 **HTTP 421 behind a reverse proxy:** every request through
 `resource.Server.Handler` or `resource.ResourceManagedServer.Handler`, including

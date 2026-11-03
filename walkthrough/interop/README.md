@@ -4,7 +4,7 @@ This standalone module has an AAuth Go Agent call the AAuth project's live
 [`whoami.aauth.dev`](https://whoami.aauth.dev/) Resource. That Resource is an
 independent TypeScript implementation.
 
-The 2026-09-01 qualification recorded below exercised one small boundary:
+The `call` command exercises one small boundary:
 
 1. AAuth Go mints an `aa-agent+jwt` for a generated Agent key;
 2. ordinary HTTPS hosting exposes only the Agent Provider metadata and JWKS;
@@ -15,11 +15,10 @@ The 2026-09-01 qualification recorded below exercised one small boundary:
 It does not exercise person identity, authorization, an Access Server, R3, or
 the five-surface interoperability demo profile.
 
-The same date's authorization qualification exercised the reverse direction: the official TypeScript
-`@aauth/agent` package obtains Person and Auth tokens from a Go Person Server
-and creates one durable note at a Go Resource. Both qualifications name their
-exact revisions below. This module pins an older published Go version and does
-not establish interoperability for the current root checkout.
+The `serve` command and the `typescript-agent` script exercise the reverse
+direction: the official TypeScript `@aauth/agent` package obtains Person and
+Auth tokens from a Go Person Server and creates one durable note at a Go
+Resource. This module pins an older published Go version in its `go.mod`.
 
 ## Build
 
@@ -136,25 +135,10 @@ The Go role keys are currently process-scoped. A restart can issue fresh
 tokens and recover the durable application consequence, but it does not retain
 or continue outstanding role credentials across that restart.
 
-### External authorization qualification
-
-On 2026-09-01, repository revision
-`8283d98718220973100c197818e512a42be179c1` pinned the standalone walkthrough
-to AAuth Go revision `32eab26ea255e99d97b5b407b3b1f9f76163c954` and the
-official `@aauth/agent` 3.0.2 package from
-[`aauth-dev/packages-js`](https://github.com/aauth-dev/packages-js) revision
-`7bd31a502904272267812e2cd26c231d0f950555`. A laptop TypeScript Agent called
-the separately hosted Go Person Server and Resource over public TLS, completed
-the Person-token → Resource-token → Auth-token exchange, and created one note.
-The same key returned the exact retained note, changed input was refused, and
-the same key recovered the note after the Go service restarted. The durable
-store contained one consequence throughout. The temporary TLS origins and
-host processes were removed after qualification.
-
-The run also exposed
-[`aauth-dev/packages-js` issue #24](https://github.com/aauth-dev/packages-js/issues/24):
-the official Agent does not yet honor arbitrary Resource-declared additional
-signature components on its initial request. This walkthrough keeps the replay
+The official Agent does not yet honor arbitrary Resource-declared additional
+signature components on its initial request
+([`aauth-dev/packages-js` issue #24](https://github.com/aauth-dev/packages-js/issues/24)).
+This walkthrough keeps the replay
 key inside the signed JSON body, where `content-digest` binds it together with
 the note, rather than weakening replay identity to fit that limitation.
 
@@ -173,16 +157,4 @@ npm test
 The Go tests check generated metadata, JWKS, token, HTTP Message Signature,
 and the identity-response check. The JavaScript unit test stubs `fetch` and
 checks the Agent script's response handling; it does not call the Go roles.
-Neither check establishes current cross-implementation interoperability.
-Repeating a live qualification requires the public-TLS setup above.
-
-## External qualification
-
-On 2026-09-01, published AAuth Go source
-`00eb6f0a2a3000ff96a44b988059acea3c2babf0` generated a short-lived public
-Agent Provider and called the live TypeScript Resource built from
-[`aauth-dev/whoami`](https://github.com/aauth-dev/whoami) revision
-`9f023d27ba51e0c11018e416b23140fbea14c9ff`. The Resource returned HTTP 200
-with the exact Go-generated provider issuer and Agent identifier. The
-temporary provider origin, DNS record, private state, and host were removed
-after the call.
+A live run against the other implementation needs the public-TLS setup above.

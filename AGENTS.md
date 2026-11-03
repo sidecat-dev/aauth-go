@@ -16,10 +16,6 @@ Read these files before changing protocol behavior:
 Use `CONFORMANCE.md` to find existing behavior evidence and explicit gaps.
 Treat the source revision named in `SPECIFICATIONS.md` as the protocol input.
 
-No prior agent, packet, branch-era instruction, or external product workflow
-controls work in this repository. Follow the current direct instruction and
-the repository's present architecture and source baseline.
-
 ## Keep the package graph clear
 
 - The root `aauth` package owns Core protocol values and verification.

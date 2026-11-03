@@ -34,14 +34,13 @@ or package name in this document is not by itself a conformance claim.
    example with in-memory policy and stores. Hosts replace those dependencies
    without replacing protocol code.
 
-## Current and target boundaries
+## Feature boundaries
 
-The current repository already has the `aauth`, `jose`, `signaturekey`,
-`agentprovider`, `agent`, `personserver`, `resource`, and `accessserver`
-packages. Their implemented behavior is the subset listed in
+Each feature below names the packages that own its values, its state and its
+calls. The behavior implemented is the subset listed in
 [CONFORMANCE.md](CONFORMANCE.md).
 
-The current mission slice supports immediate approval or a retained proposal
+Missions support immediate approval or a retained proposal
 for separately authenticated host review. The root package owns proposal,
 approved blob, update, completion, digest, and response values. `agent` makes
 one explicit proposal or poll call. `personserver` retains exact deferred
@@ -54,7 +53,7 @@ three- or four-party authorization. Mission text and updates never cross the
 Person Server boundary, and no generic lifecycle or evidence object joins
 these roles.
 
-The current Bootstrap slice has explicit two-key and single-durable-key hosted
+Bootstrap has explicit two-key and single-durable-key hosted
 profiles, with Ed25519 or ES256 keys. Both share durable-key `hwk` enrollment and one stable Agent
 identity. Refresh then either verifies a durable-to-ephemeral `jkt-jwt` or a
 direct durable `hwk` proof. Both retain the exact first Agent-token result
@@ -81,7 +80,7 @@ lifecycle or automatic Resource registry joins those roles. Each package's
 `storetest.RunAgentTokenRevocation` checks the same source operation through
 that role-local interface.
 
-The current Events slice adds the `events` value package plus explicit
+Events adds the `events` value package plus explicit
 `agentprovider`, `resource`, and `agent` role surfaces for public and protected
 subscriptions. The AP owns subscribe-token issuance and its inbox, the
 Resource owns public registration, opaque protected-ticket issuance and
@@ -89,7 +88,7 @@ consumption, and outbound delivery, and the Agent owns local context and replay
 correlation. Each role receives its own small store interface; no shared Events
 lifecycle object crosses those boundaries.
 
-The current Permission slice covers top-level missionless and mission-bound
+Permission covers top-level missionless and mission-bound
 local actions. The root package owns the `granted` and `denied` wire values;
 `agent` performs one signed request or poll; and `personserver` owns verified
 intent, immediate or deferred policy, and purpose-specific store interfaces.
@@ -101,7 +100,7 @@ recomposition but carries no person authority. The application authenticates
 the person, interprets parameters, and executes an action only after receiving
 the typed grant.
 
-The current Audit slice is one top-level mission-bound post-action path. The
+Audit is one top-level mission-bound post-action path. The
 root package owns the exact audit document, `agent` makes one signed
 submission, and `personserver` compares stable mission identity and lifecycle
 state while appending through `MissionAuditStore`. Accepted updates do not
@@ -110,7 +109,7 @@ audit store extends the mission lifecycle boundary because an append must race
 atomically with expiry or completion. Audit does not execute the action, and
 it does not create a general evidence container.
 
-The current Interaction Endpoint slice has separate question and relay state
+The Interaction Endpoint has separate question and relay state
 machines, each usable with or without a mission. The root package owns exact
 documents, `agent` performs one signed request or poll, and `personserver` hands
 untrusted Markdown and an optional exact mission view to host policy in either
@@ -119,7 +118,7 @@ their focused deferred state; their mission-aware counterparts extend the
 existing mission boundary for immediate retention and deferred transitions.
 Neither is a generic interaction engine or the complete mission log.
 
-The current Supervision slice adds the `supervision` package, which owns the
+Supervision adds the `supervision` package, which owns the
 supervision server's metadata, the signed request envelope and bodies,
 decisions, events, mission reports, errors, the signature profile of a signed
 decision, and the Person Server's client for a supervision server. The
@@ -134,22 +133,16 @@ was answered `202` is applied by serving the Agent's retained signed request
 again, verified as it was made, so issuance stays in one code path. Neither
 role imports the other.
 
-The current model includes focused `r3`, `events`, `budgets` and
-`supervision` protocol packages. Sections below distinguish their implemented profiles from target
-ownership. Present-tense support must never be inferred from the target import
-map alone.
-
 The hosted-service example composes existing role APIs; it does not add a
 hosted-service package. Enrollment, permission, mission review, Resource-owned
 account selection, R3, Budget, one successful connector dispatch,
 exhausted-Budget refusal before a second dispatch, and revocation remain
-independently configurable role capabilities.
-Their composition is evidence that the package boundaries work together, not
-a new cross-role lifecycle abstraction.
+independently configurable role capabilities; the example adds no cross-role
+lifecycle abstraction.
 
 ## Package graph
 
-Arrows mean target imports. Protocol packages do not import role packages, and
+Arrows mean allowed imports. Protocol packages do not import role packages, and
 role packages do not import one another.
 
 ```mermaid
@@ -221,8 +214,7 @@ They do not own protocol semantics.
 
 ### Root package `aauth`
 
-The current root package owns the implemented Core wire semantics. In the
-target architecture it owns the complete Core value layer:
+The root package owns the Core value layer:
 
 - Server and Agent identifiers.
 - Core metadata documents and endpoint URL rules.
@@ -274,9 +266,7 @@ unsupported algorithms explicit.
 
 ### `signaturekey`
 
-The current `signaturekey` package implements the schemes and proof behavior
-needed by executing paths. The target completes HTTP Signature Keys
-independently of AAuth role policy:
+`signaturekey` owns HTTP Signature Keys, independently of AAuth role policy:
 
 - Structured-field grammar and signature-label correlation.
 - All defined schemes: `hwk`, `jkt-jwt`, `jwks_uri`, `jwks`, `jwt`,
@@ -294,7 +284,7 @@ turns a valid signature into authorization.
 
 ### `r3`
 
-The current `r3` package is the vocabulary-neutral R3 value layer:
+The `r3` package is the vocabulary-neutral R3 value layer:
 
 - An explicit immutable registry with no global registration side effects.
 - Strict document, proposal, display, parameter, reference, grant, and
@@ -332,7 +322,7 @@ transaction, retained evidence record, or source attestation.
 
 ### `budgets`
 
-The current `budgets` package owns the Budget companion's reusable semantics:
+The `budgets` package owns the Budget companion's reusable semantics:
 
 - Exact non-negative amount, unit, and decimal-scale values.
 - Same-denomination amount narrowing, Resource-declared denomination checks,
@@ -344,7 +334,7 @@ The current `budgets` package owns the Budget companion's reusable semantics:
 
 It does not choose a person's ceiling, price an operation, decide whether a
 failed call is chargeable, or create a cross-Resource ledger. Those are policy
-inputs owned by PS and Resource compositions. The current Resource profile
+inputs owned by PS and Resource compositions. The Resource profile
 retains a purpose-specific `BudgetLineage` through host storage before releasing
 the Resource token, then uses one atomic `BudgetStore.Charge` after every other
 authorization check and before application dispatch. A variable cost is
@@ -358,7 +348,7 @@ may narrow the amount in its signed request, and the AS may narrow it again.
 
 ### `events`
 
-The current `events` package owns reusable token and delivery semantics shared
+The `events` package owns reusable token and delivery semantics shared
 by public and protected subscription paths:
 
 - AP metadata extension.
@@ -379,7 +369,7 @@ serve one validated AsyncAPI document through its Events service.
 ### Bootstrap and interoperability
 
 Bootstrap is informational and platform-specific, so it does not become an
-invented portable wire package. The target `agentprovider` API exposes
+invented portable wire package. The `agentprovider` API exposes
 enrollment and refresh composition points, while executable examples
 demonstrate the two-key, single-key, and self-hosted patterns using Core and
 Signature-Key primitives.
@@ -400,14 +390,15 @@ that applications use.
 
 ## Role packages
 
-Each role package already owns Core HTTP handlers or client steps plus small
+Each role package owns Core HTTP handlers or client steps plus small
 interfaces for the policy and state that role controls. The descriptions below
-state their target boundary, including companion behavior not yet implemented.
+state what each package owns; [CONFORMANCE.md](CONFORMANCE.md) says which of
+that behavior is implemented.
 Interfaces live next to the code that consumes them.
 
 ### `agentprovider`
 
-The current package owns Agent-token issuance, one-level sub-agent issuance
+The package owns Agent-token issuance, one-level sub-agent issuance
 from a parent token it verifies with its own key (directly or through the
 hosted `SubagentHandler`), AP metadata/JWKS, optional enrollment and refresh
 composition, host-managed enrollment state transitions, explicit Agent-token
@@ -417,7 +408,7 @@ attestation, renewal, sub-agent issuance, and AP-to-Agent event delivery.
 
 ### `agent`
 
-The target owns explicit caller steps:
+The package owns explicit caller steps:
 
 - Discover a role.
 - Obtain or refresh an Agent token through a selected Bootstrap pattern.
@@ -440,14 +431,14 @@ Agent verification, and protected principal preserve that exact value in both
 authorization topologies. Account is Core context; no companion profile owns
 or enables it.
 
-The current R3 path is explicit at the Agent boundary. The caller supplies a
+The R3 path is explicit at the Agent boundary. The caller supplies a
 registered operation set, receives and verifies the Resource token, presents
 its exact compact form to the Person Server, verifies
 the returned Auth token, and chooses whether to begin, retry, or poll one HTTP
 call. Each method performs one network consequence. R3 documents remain opaque
 to the Agent.
 
-The current fixed-price Budget path follows the same shape. The caller supplies
+The fixed-price Budget path follows the same shape. The caller supplies
 the request and signed Budget Auth token. `BeginBudgetCall` returns either one
 caller-owned response or one verified step-up. An unverifiable result after
 HTTP handoff is a typed uncertain outcome carrying the full signed grant, not
@@ -458,7 +449,7 @@ Budgets adds no second account mechanism.
 
 ### `personserver`
 
-The target owns Agent-person binding, directed identifiers, Person-token
+The package owns Agent-person binding, directed identifiers, Person-token
 records, missions, permission/audit/interaction endpoints, three-party
 authorization, and PS-to-AS federation. Its policy inputs receive verified
 Core and companion values in source terminology. Mission approval stores the
@@ -535,9 +526,9 @@ execution, or the complete cross-event mission log.
 Mission audit state stays with mission lifecycle state. `MissionAuditStore`
 compares stable identity and lifecycle state and appends one exact record in
 Audit-entry order. Identical records are distinct actions, not idempotent
-retries. A host read is owner-scoped; the current HTTP surface exposes
+retries. A host read is owner-scoped; the HTTP surface exposes
 submission only. Cross-event ordering with updates, tokens, permissions, and
-interactions belongs to the still-unimplemented complete mission log.
+interactions belongs to a complete mission log, which is not implemented.
 
 Mission-bound interaction relay state follows the same composition rule.
 `MissionInteractionRelayStore` embeds the ordinary mission and relay contracts
@@ -554,7 +545,7 @@ displayed; a later accepted update requires the host to resume again.
 
 ### `resource`
 
-The target owns Resource metadata/JWKS, the five access modes, Resource-local
+The package owns Resource metadata/JWKS, the five access modes, Resource-local
 sessions, authorization endpoints, Resource-token issuance, requirements,
 protected calls, revocation, held invocations, R3 document/proposal/result
 state, Events registration/delivery, and Budget accounting.
@@ -565,13 +556,13 @@ proof selects the Agent-token marker store; a PS proof selects the observed
 Auth-token store. Direct Agent use checks its marker only after the Agent token
 and proof key verify, then refuses before the application handler.
 
-Each current Resource server enforces its configured runtime access mode.
+Each Resource server enforces its configured runtime access mode.
 Parsed operation hints support Agent-side preparation only; they do not select
 Resource enforcement behavior, replace a runtime `AAuth-Requirement`, or grant
 access. Core scope, R3 operations, and Budget constraints are evaluated
 independently; none is projected into another.
 
-The current R3 paths let one Resource advertise several registered
+The R3 paths let one Resource advertise several registered
 vocabularies at once. Each configured vocabulary supplies a
 parser-registration-validated authoritative snapshot whose receipt names the
 advertised discovery endpoint. Authorization requests and protected-call
@@ -615,12 +606,11 @@ result and retains it for authenticated Agent delivery. Payment settlement and
 billing relationships stay in host policy; there is no shared PS/AS store or
 implicit polling loop. Both roles consume terminal delivery conditionally.
 
-
-The target owns four-party PS authentication, Resource-token verification,
+The package owns four-party PS authentication, Resource-token verification,
 policy, narrowing, Auth-token issuance, and R3 audit. An R3-capable issuer
 commits the mandatory audit record before publishing the token.
 
-The current R3 path independently fetches and verifies the exact Resource
+The R3 path independently fetches and verifies the exact Resource
 artifact before policy. Separate class-document and per-call-proposal callbacks
 receive ordinary Core context plus vocabulary-neutral typed values. Class
 policy returns an authorization already proven through the registered codec.
@@ -631,7 +621,7 @@ the source defines no stable request replay key.
 
 ## State interfaces
 
-Target state is split by protocol fact instead of accumulated in one store.
+State is split by protocol fact instead of accumulated in one store.
 Examples include:
 
 - `EnrollmentStore` at an AP for a durable-key enrollment, atomic administrative
@@ -658,7 +648,7 @@ pending queue, one host decision, and one terminal poll. Approval commits the
 Mission and returned Person-token records in that same transaction; it does
 not introduce a separate mission authority.
 
-The current `R3DocumentStore` is deliberately one small immutable-record
+`R3DocumentStore` is deliberately one small immutable-record
 boundary. It copies values across the interface, converges concurrent exact
 commits, refuses same-URI replacement, keeps committed records loadable across
 server recomposition, and exposes them only through the signed Resource
@@ -737,5 +727,3 @@ turning documentation into a second specification.
 - No hidden polling or automatic replay of consequential requests.
 - No invented Bootstrap wire protocol or AP-to-agent Events transport.
 - No claim that examples are deployment templates.
-- The first stable API is designed from the current sources; unpublished
-  prototypes do not define it.

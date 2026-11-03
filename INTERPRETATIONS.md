@@ -6,10 +6,8 @@ not appear here; [CONFORMANCE.md](CONFORMANCE.md) says whether they are
 implemented. See [SPECIFICATIONS.md](SPECIFICATIONS.md) for the exact source
 revisions.
 
-Companion-source text alone does not create an implementation interpretation.
-This file gains a companion entry only when an accepted implementation path
-requires a choice; source-only questions without such a path remain in
-[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
+A question about the drafts that needs no implementation choice belongs in
+[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md), not here.
 
 ## Resource-token scope is optional when a companion claim replaces it
 
@@ -98,8 +96,6 @@ scheme if they can recover and enforce the same PS/AS-only fetch boundary.
 
 `eid` identifies the subscription. Each event token carries a required `jti`,
 and `(iss, jti)` is the deduplication key at the Agent Provider and the Agent.
-The earlier `(iss, eid)` reading would discard later events on the same
-subscription; that sentence is not in this pin.
 
 The implementation keeps `eid` as subscription and routing context. It derives
 a local delivery fingerprint as SHA-256 over the exact compact Event token
@@ -109,14 +105,6 @@ content type, or payload on the same subscription is a different delivery.
 The fingerprint is local state, not a new wire claim. Minting and verifying
 an event token requires `jti`; the fingerprint still distinguishes a changed
 body under a reused identifier.
-
-## Event-token expiry is MUST NOT in both sections
-
-**Source:** Events, `Structure` (the `exp` claim) and `Agent Verification`.
-
-Both sections say the Agent MUST NOT act on an event token whose `exp` has
-passed. There is no MUST versus SHOULD NOT conflict in the pinned text.
-Verification rejects an expired event token.
 
 ## Events registration has exact retry and delivery-time endpoint resolution
 
@@ -232,8 +220,7 @@ not check the mission; "the PS verifies that the mission is active when it
 acts on the token". Held delivery retains missionless requests only, so a
 Resource configured with `HeldInvocations` answers a mission-bound request
 with the ordinary `401` challenge rather than holding it; the draft lets a
-Resource choose either form. Before, the Resource refused a mission-bound
-person token with `401 invalid_token`.
+Resource choose either form.
 
 **Evidence:** `resource/challenge_test.go:TestAuthTokenRequirementCopiesTheMissionOfAMissionBoundPersonToken`.
 
@@ -292,8 +279,8 @@ outcomes.
 
 Update and completion policy denial use provisional `403
 mission_update_denied` and `403 mission_completion_denied`. Core registers no
-denial result for either valid request—or clearly say immediate refusal is an
-allowed outcome. Mission actions are sent once and have no lost-success
+denial result for either valid request, nor says clearly that immediate
+refusal is an allowed outcome. Mission actions are sent once and have no lost-success
 recovery identity. These gaps are recorded in
 [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
@@ -338,16 +325,6 @@ which the store records at `expires_at`. 256 bytes is the bound of a
 
 **Evidence:** `personserver/storetest/mission.go` (`RunMission`),
 `integration/mission_termination_test.go`.
-
-## Missing deferred `Retry-After` uses the stated five-second fallback
-
-**Source:** AAuth Core, `Pending Response` and `Polling with GET`.
-
-Core requires the sender to include `Retry-After` and gives the receiver a
-five-second fallback when it is absent, so the two rules do not conflict
-(AAG-F068, withdrawn in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md)). The receiver
-implements the fallback. A present header must still contain one valid
-nonnegative delay.
 
 ## A `429` poll answer honors both the backoff and its own `Retry-After`
 
@@ -740,13 +717,12 @@ and the body remains readable. Zero and `-1` with nonempty content are allowed.
 This prevents HTTP framing from sending fewer bytes than the digest covers;
 the verifier still checks actual content rather than trusting Content-Length.
 
-Empty content retains the existing component profile, including non-nil empty
+Empty content keeps the base component profile, including non-nil empty
 transport readers. Explicitly requiring `content-digest` still covers the
 SHA-256 digest of zero bytes. Advertised components remain unconditional;
 metadata does not imply that the conditional default applies to empty content.
 
-This changes the default for body-bearing Resource calls. Signing and
-verification buffer within their configured bound (1 MiB by default); larger
+Signing and verification buffer within their configured bound (1 MiB by default); larger
 payloads require explicit limits. Unchecked body pass-through and streaming
 digest trailers are not supported. The proof does not prevent replay within
 its freshness window.
@@ -914,7 +890,7 @@ and single-key, accept a body with no `evidence` member. The host's `Refresh`
 callback receives it as empty `RefreshRequest.Evidence` and decides, as for
 any other evidence; a host that requires evidence refuses it, and the
 handler answers that refusal with its policy-denial status. A present
-`evidence` member is passed through as before, including `null`. Enrollment
+`evidence` member is passed through, including `null`. Enrollment
 still requires an `evidence` member: the draft gives no example enrollment
 body, and its sketches leave the envelope to the AP (line 404).
 
@@ -1180,9 +1156,7 @@ a copy of the request apart from the exchange that carried it. The `close`
 and `keep-alive` options of `Connection` describe that connection, not the
 request, and RFC 9110 does not let them travel past it. A retained request
 leaves the `Connection` field and `http.Request.Close` behind, and the
-application sees neither. Before, a per-call retry sent with
-`Connection: close` was refused with `400 invalid_request` before it ran, and
-a held request with `500`. A `Connection` field naming any other option names
+application sees neither. A `Connection` field naming any other option names
 a further hop-by-hop field, which a retained request still refuses, as it
 refuses trailers, transfer codings and the other hop-by-hop fields.
 
@@ -1329,9 +1303,9 @@ policy, so the new scope may differ.
 Protocol -11 (AAuth 28e8258f, Token Revocation, Errors table) answers `403
 unsupported_iss` when the recipient does not accept revocations from the
 caller. The Resource returns it when the matching status store is not
-configured. The body no longer names an issuer, so there is no body-issuer
-mismatch refusal. The refusal after revocation above is
-a different, protected-use response and is unchanged.
+configured. The body names no issuer, so there is no body-issuer mismatch
+refusal. The refusal after revocation above is a different, protected-use
+response.
 
 ### Pre-use revocation is recorded
 
@@ -1370,7 +1344,7 @@ and whose `RetryAfter` is the delay. Zero is valid: it is either a supplied `0`
 or a date that is not in the future. A missing, empty, repeated or malformed
 header, or an unrepresentable date, leaves the plain `*aauth.ProblemError`; the
 library supplies no default delay and never retries. `errors.As` finds both
-types. Agent polling is a separate path and is unchanged.
+types. Agent polling is a separate path.
 
 This reports what the recipient said. It does not bound or rate-limit the
 revocations a host accepts; that remains a host policy this library does not
@@ -1404,7 +1378,7 @@ declaration. From that point, the Person Server preserves the exact unit and
 scale and may only lower the amount. The library defines no conversion
 algorithm: an optional Resource offer policy owns any request-to-offer
 conversion. This is not a claim that cross-denomination output is a
-protocol-verifiable numeric lowering; that source question is `AAG-F088` (since withdrawn).
+protocol-verifiable numeric lowering.
 
 ## A metered route treats a missing signed Budget as no grant
 
@@ -1419,7 +1393,7 @@ is not a grant: the AS does not substitute the Resource offer, and it must not
 issue a `budget` claim. A metered route then refuses that Auth token. When the
 PS does send a ceiling, the AS may only lower its amount. `BudgetConfig.Metered` lets
 host routing policy distinguish priced operations from free ones. Its absence
-meters every protected route, preserving the existing default. A free route
+meters every protected route. A free route
 accepts an otherwise valid Core Auth token without consulting pricing or the
 Budget store; a Budget token receives zero-cost feedback, even when exhausted.
 This selector governs protected Auth-token use, not initial-offer policy.
@@ -1488,7 +1462,7 @@ Resource library cannot select that lineage without guessing. A metered
 Resource therefore requires a host callback that owns retained Person-token
 state and returns the fresh token. Before releasing the initial Resource token,
 the Resource passes its exact `BudgetLineage` to a required host retention
-callback; the example no longer obtains this state from the Agent side. The
+callback. The
 Resource and Agent verify every context field they can observe, including a
 nonempty `presented_jti`; neither library claims to prove that the host selected
 the exact prior Person-token record. The Agent returns the verified step-up and
@@ -1561,7 +1535,7 @@ The Agent starts a conservative local answer window when it finishes
 validating the response and refuses an answer at or after that local deadline.
 The Person Server independently enforces the canonical retained deadline.
 This implementation choice does not claim the two clocks or instants are
-identical; `AAG-F093` (since withdrawn) asked the editors to define the binding.
+identical.
 
 While an answered round remains latest and no later question is active, an
 exact answer replay is idempotent and a changed replay conflicts. Once another
@@ -1586,9 +1560,7 @@ and the resource-token lifetime stays within the configured maximum. A retained
 person-token record must agree. A revoked Agent-person binding, or a revoked
 Agent or sub-agent token that started the wait, is refused. The retained
 scopes are replaced. Account, Budget, mission-bound, R3, and AS-relayed
-updated requests are not accepted. `AAG-F008` (since resolved) had required an
-`agent` claim current Resource tokens do not carry; the executed checks use
-the claims above.
+updated requests are not accepted.
 
 ### A mission adds context, not another continuation API
 
@@ -1627,8 +1599,7 @@ instead shows terminal denial as `403 denied`. This implementation keeps the
 endpoint-specific representation for both immediate and deferred host
 decisions. The Agent also accepts a generic `403 denied` while polling so it
 can interoperate with a server that follows the generic state machine. It does
-not treat any other `403` problem as a permission decision. `AAG-F096` (since withdrawn) asked the
-editors to choose one terminal wire representation.
+not treat any other `403` problem as a permission decision.
 
 The executing profiles are top-level and either missionless or associated with
 one active mission. A nonempty `mission_s256` is validated and owner-scoped;
@@ -1659,12 +1630,11 @@ action means.
 The source defines no stable identity for the initial POST. A transport error,
 malformed success, or non-retryable server failure after handoff therefore
 returns `PermissionSubmissionUncertainError` and is never retried
-automatically (`AAG-F098`, since withdrawn). A definite `4xx` rejection remains an ordinary
+automatically. A definite `4xx` rejection remains an ordinary
 failure; `429` and `503` remain caller-owned responses under the source's
 explicit backoff rules. Once a terminal poll response is consumed, the source
-requires later polls to return `410`; the implementation follows that rule and
-therefore inherits the lost-terminal-response gap already recorded as
-`AAG-F004` (since withdrawn).
+requires later polls to return `410`, and the implementation follows that
+rule.
 
 The Agent can persist a `PendingPermissionSnapshot` and restore it with a
 fresh client. Restoration checks the current Agent token, the retained issuer,
@@ -1701,17 +1671,15 @@ identity and lifecycle state inside the mission store's atomic boundary, so
 completion or expiry cannot race into a successful later append. An accepted
 update does not invalidate the action's audit because it does not change the
 mission. Identical requests are distinct Audit-sublog entries because Core
-defines no audit identity or replay key. This slice does not claim ordering
+defines no audit identity or replay key. This path does not claim ordering
 against the other event classes in Core's complete mission log.
 
 `SubmitAudit` performs one request and waits for its protocol status. Any `201`
 acknowledges the append; an optional representation is ignored. It does not
 retry, poll, or hide the call in background work. A transport failure or server
 failure after handoff is an uncertain outcome because the record may already
-exist (`AAG-F003`, since withdrawn). The source's simultaneous `201` contract and
-“fire-and-forget” guidance leave the meaning of “SHOULD NOT block” unclear;
-`AAG-F100` (since withdrawn) asked whether it describes application control flow or the HTTP
-exchange itself.
+exist. The source's “fire-and-forget” guidance (“SHOULD NOT block”) is read
+as constraining whether the application waits, not the HTTP exchange.
 
 ## Interaction questions are a focused exact-document path
 
@@ -1744,8 +1712,7 @@ retrieval surface.
 `AskPersonQuestion` makes one request and never retries. A valid immediate
 answer returns its exact bytes; a valid `202` returns a verified pending handle.
 A transport failure or malformed initial result remains uncertain because the
-question may already have reached the person. `AAG-F101` (since withdrawn) recorded the missing
-uncertain-initial-submission identity. Once the pending URL is received, the
+question may already have reached the person. Once the pending URL is received, the
 ordinary deferred state machine applies, including its separate lost-terminal
 response gap.
 
@@ -1779,7 +1746,7 @@ and a terminal response when engagement, timeout, or no-progress occurs, but it
 does not assign a terminal HTTP status or body. This implementation uses `200`
 with `{"status":"interacting"}` for engagement and
 `{"status":"pending"}` for timeout or no progress. These reuse only Core's
-defined status values and are explicitly local profile choices (`AAG-F102`, since withdrawn).
+defined status values and are explicitly local profile choices.
 The Resource's original pending URL remains authoritative for whether the
 underlying operation completed.
 
@@ -1802,25 +1769,6 @@ local consistency choice, not a claim that Core defines key continuity.
 `AAG-F105` asks the editors to choose between original-key continuity and
 decision-time token issuance for a renewed Agent.
 
-## Third-party login cannot yet construct its first protocol message
-
-**Sources:** AAuth Core, `Third-Party Login`, `Login Endpoint`, `Login Flow`,
-`Person Token`, and `Resource Token Structure`.
-
-The Login Flow tells an Agent or Resource to create a Resource token and POST
-it directly to the selected Person Server's token endpoint. At that point the
-user has not authenticated. A current Resource token nevertheless requires
-`sub` and `presented_jti`, both derived from a Person token issued for that
-user. The flow contains no Person-token request and its diagram begins with the
-Resource-token POST.
-
-This is not a choice between two equivalent Go compositions: the first
-required message cannot satisfy the current token grammar. The implementation
-therefore does not mint placeholder person claims, omit required claims, or
-define a login-only Resource-token dialect. `AAG-F103` (since resolved) asked whether the flow
-must first obtain a Person token through an additional browser-correlated step
-or whether Login intends a different signed request object.
-
 ## Signature `created` ahead of the window is `clock_skew`
 
 Source: Signature-Key `69f5ba2`, section `clock_skew` (heading `### clock_skew` at line 1104, section lines 1104-1114, see
@@ -1832,17 +1780,16 @@ is further ahead of the verifier clock than the validity window, and leaves a
 default `DefaultSignatureWindow`, 60 seconds) for both directions. A `created`
 exactly one window ahead or behind is accepted; one second further ahead is
 `clock_skew`, one second further behind is `invalid_signature`. `created` is a
-whole number of seconds, and the tests step by one second. The window and expiry
-semantics are unchanged. The source does not fix the window length; this
-choice is the library's existing one.
+whole number of seconds, and the tests step by one second. The source does
+not fix the window length; this is the library's choice.
 
 JWT `iat` skew uses the same window, and the policy belongs to the request
-rather than to general token verification. Core `validateTimes` no longer
-refuses a future `iat`; `exp`, `nbf` and the positive-lifetime rule are
-unchanged, and no leeway is added. A verifier holding a prepared or verified
+rather than to general token verification. Core `validateTimes` does not
+refuse a future `iat`; it checks `exp`, `nbf` and a positive lifetime, with
+no leeway. A verifier holding a prepared or verified
 signed request calls `CheckIssuedAt`, which answers `clock_skew` for an `iat`
 later than the request's captured time plus its effective `SignatureWindow`.
-`VerifyJKTJWT` uses this check in place of its former `invalid_jwt` refusal.
+`VerifyJKTJWT` uses this check.
 The `Signature-Key` header token is answered `401` with
 `Signature-Error: error=clock_skew`; a token carried as a request parameter is
 answered `400` with body error `clock_skew` (see the Protocol -11 JWT `iat`
@@ -1965,7 +1912,7 @@ Server has no page of its own for an AS interaction. It answers
 `403 user_unreachable`, as the Person Token Endpoint says a PS that must reach
 the person does without the capability, and sends the AS one signed `DELETE`.
 On a later advance the wait ends with that answer. The federated Person
-Server therefore accepts `capabilities` now and, as AAuth-Capabilities
+Server therefore accepts `capabilities` and, as AAuth-Capabilities
 requires, ignores values it does not act on.
 
 The PS reads the interaction requirement as an Agent would. A `url` that is
@@ -2106,7 +2053,7 @@ AS record only until its deadline; the PS does not retry it (AAG-F109).
 `TestSubagentFederatedCancellationAfterExpiryIsExpired`,
 `TestAccessServerCancellationBelongsToTheRequestingPersonServer` and
 `TestSubagentFederatedRevokedChildTokenEndsTheWait`; the shared harness
-`authorization.subagent` slice exercises the same answers against aauth-rust.
+`authorization.subagent` role exercises the same answers against aauth-rust.
 
 ## A revoked Agent-person binding ends issuance and pending delivery
 
@@ -2566,7 +2513,7 @@ that does not fit leaves the invocation pending. A hold needs a reserving
 Budget store for that order. With a Budget profile the Resource holds nothing
 else but a metered release, because a held Core or per-call completion carries
 no meter. A refused
-token that carries R3 claims is answered `401`, as before.
+token that carries R3 claims is answered `401`.
 
 **Evidence:** `resource/held_budget_test.go`.
 
@@ -2706,7 +2653,7 @@ four-party Resource accepts auth-token revocations only from its configured
 Access Server. A Person Server counts an Access Server it passed a person token
 to as `upstream_token` among those it presented the token to, so a revocation
 reaches it and it can answer `revoked_upstream_token`
-([AAG-F128](SPEC-FEEDBACK.md#aag-f140--no-revocation-reaches-an-access-server-that-received-a-person-token-as-upstream_token)). When a person token is revoked the Access Server revokes every
+([AAG-F128](SPEC-FEEDBACK.md#aag-f128-no-revocation-reaches-an-access-server-that-received-a-person-token-as-upstream_token)). When a person token is revoked the Access Server revokes every
 unexpired auth token issued against it and, on a step-up, against those auth
 tokens in turn, and records each as revoked itself so a later step-up presenting
 one is refused.
@@ -2901,7 +2848,7 @@ upstream token with the complete Budget companion and then set its grant
 aside: the upstream token "grants nothing by itself", and "a budget is not
 delegable", so each downstream hop is sized from its own Resource token's
 offer and nothing is drawn from the upstream grant. An upstream token without
-Budget claims is verified as a Core auth token, as before. One that carries
+Budget claims is verified as a Core auth token. One that carries
 R3 claims is still refused, because verifying them needs the R3 document,
 which a chained request does not carry. aauth-rust's core verifier keeps
 companion claims without checking them, so it accepts both.
@@ -3385,7 +3332,7 @@ uses it, so a key without `alg` is an unsupported algorithm there.
 RFC 8037 examples are, and checks its material under the algorithm its type
 and curve determine: Ed25519, ES256 for P-256, ES384 for P-384 and RS256 for
 RSA. For a key with `alg` the two agree, and no AAuth verification path calls
-the new method.
+`RFC7638Thumbprint`.
 
 **Evidence:** the conformance suite's `vector.jwk-thumbprint.no-alg`.
 
@@ -3421,9 +3368,8 @@ it; the draft is otherwise silent, so the supervision server writes the key's
 in `Signature-Key` must name the same key there, which signing checks, and a
 verifier takes the key from `Signature-Key`. Agents still send no `keyid`
 (line 2238). Problem bodies carry `status`, `error` and `detail`, and `type`
-only for a signature failure; `title` is a MAY (line 2578), Go's problem
-format predates the supervision feature, and adding it would change every
-Agent-facing body for no draft reason.
+only for a signature failure; `title` is a MAY (line 2578), and adding it
+would change every Agent-facing body for no draft reason.
 
 **Evidence:** `supervisionserver/server_test.go` (`requireSameResponse`).
 
@@ -3535,7 +3481,7 @@ mission "MUST reject requests with `mission_terminated`". aauth-rust answers
 a terminated mission's read `200` with `mission_status` and
 `termination_reason` in the body instead; both say the mission ended.
 
-**Evidence:** aauth-conformance scenario 180 (`mission.blob-served`) and
+**Evidence:** the aauth-conformance scenario `mission.blob-served` and
 `integration/mission_three_party_test.go`.
 
 ## Metadata decoders check what Core requires of each document
@@ -3555,11 +3501,10 @@ an Access Server), `jwks_uri` and the display URIs `https`, and the
 `https` without query or fragment. Core states no form for the other
 endpoints, and they are checked where they are used. Unknown members are
 ignored. The Agent client decodes Person Server and Resource metadata this
-way, so a Person Server document without `jwks_uri` is now refused; Core makes
+way, so a Person Server document without `jwks_uri` is refused; Core makes
 it REQUIRED.
 
-**Evidence:** aauth-conformance vectors 436-439 (`vector.metadata`) once the
-adapter calls the decoders; `agent` tests.
+**Evidence:** `agent/client_test.go:TestClientRejectsInvalidRoleMetadata`.
 
 ## A Resource that publishes no metadata is known by its origin
 
@@ -3573,9 +3518,8 @@ well-known URL as no document. It then knows the Resource by its origin, the
 identifier it would have checked `issuer` against, and gives every member its
 stated default: `access_mode` `agent-token`, the default `signature_window`,
 no `authorization_endpoint`, no extra signature components, and no R3 or
-Budgets members. A redirect, any other status, a transport error, and every
-document that is published are handled as before, so a Resource that publishes
-its metadata gets exactly the checks it had. Without an
+Budgets members. A redirect, any other status and a transport error remain
+failures, and a published document gets the ordinary checks. Without an
 `authorization_endpoint`, `Authorize` refuses; R3 and Budgets requests refuse
 because nothing is advertised or declared.
 

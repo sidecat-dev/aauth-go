@@ -50,8 +50,8 @@ const (
 )
 
 // InteractionRelayCompletion is the terminal body used by this implementation
-// profile after the Person Server stops waiting. Core defines the status values
-// but does not define a terminal response body; see SPEC-FEEDBACK.md.
+// profile after the Person Server stops waiting. Completion of the underlying
+// operation is signalled at the Resource's own pending URL.
 type InteractionRelayCompletion struct {
 	Status InteractionRelayStatus `json:"status"`
 }

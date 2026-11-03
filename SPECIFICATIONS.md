@@ -33,9 +33,6 @@ answer for a header JWT `iat`.
 - Section: the `### clock_skew` heading at line 1104; the section is lines 1104-1114.
 - SHA-256 of the whole file at that commit: `b2b43db67a1aa5249d1166589834d44f81e97ea2e6375a07b475115efa196b7d`.
 
-The overlay is a list, not a table row, because the baseline manifest check
-requires exactly one table row per source file.
-
 The JWT `iat` rule itself follows the JWT `iat` note below.
 
 ## Executed behavior: Signature-Key `revoked_jwt`
@@ -49,9 +46,6 @@ where its own revocation store gives it notice.
 - Repository commit: [Signature-Key `69f5ba2`](https://github.com/dickhardt/signature-key/commit/69f5ba2647be848feed043fb6d8b0790e43cd0b6).
 - Section: the `### revoked_jwt` heading at line 1092; the section is lines 1092-1102. The registry row is line 1462.
 - SHA-256 of the whole file at that commit: `b2b43db67a1aa5249d1166589834d44f81e97ea2e6375a07b475115efa196b7d`.
-
-The overlay is a list, not a table row, because the baseline manifest check
-requires exactly one table row per source file.
 
 ## Executed behavior: presenting a revoked token
 
@@ -76,9 +70,6 @@ rotation (lines 1289–1305).
 - Section: the `### Presenting a Revoked Token` heading at line 2760; the section is lines 2760-2767.
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
-The overlay is a list, not a table row, because the baseline manifest check
-requires exactly one table row per source file.
-
 ## Executed behavior: agent identifier local part
 
 The manifest pins the whole Protocol file. This library executes the `local`
@@ -91,9 +82,7 @@ part grammar and exact-comparison rule in `ValidateAgentIdentifier` and
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
 The `local` part accepts `A-Za-z`, digits, `-`, `_`, `+` and `.`, and agent
-identifiers compare exactly without case folding. The overlay is a list, not a
-table row, because the baseline manifest check requires exactly one table row
-per source file.
+identifiers compare exactly without case folding.
 
 ## Executed behavior: revocation request
 
@@ -120,9 +109,9 @@ report is validated and not returned.
 ## Executed behavior: JWT `iat` and `clock_skew`
 
 The manifest pins the whole Protocol file. This library executes the JWT `iat`
-rule and its `clock_skew` answers. General token verification no longer
-refuses a future `iat`; `exp` and `nbf` checks are unchanged and no universal
-JWT leeway is added. A verifier that has a prepared signed request refuses a
+rule and its `clock_skew` answers. General token verification does not
+refuse a future `iat`; it checks `exp` and `nbf` and adds no universal JWT
+leeway. A verifier that has a prepared signed request refuses a
 JWT whose `iat` is later than the request's captured time plus its effective
 signature window (`signaturekey.PreparedRequest.CheckIssuedAt`, 60 seconds by
 default). The token in the `Signature-Key` header is answered `401` with
@@ -140,12 +129,8 @@ applies none.
 - Section: the `### Common JWT Verification` heading at line 2311 (lines 2311-2322) and the `clock_skew` row at line 2597 of `### Token Endpoint Error Codes`.
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
-The overlay is a list, not a table row, because the baseline manifest check
-requires exactly one table row per source file.
-
 [AAuth Explorer at `e6d7913`](https://github.com/aauth-dev/explorer/commit/e6d79137cda1a6a650d4394a37095393e1cc62ba)
-is a non-normative diagnostic implementation, not an editor source. It is
-tracked by Git commit rather than inserted into the source manifest.
+is a non-normative diagnostic implementation, not an editor source.
 
 ## Executed behavior: call-chain expiry
 
@@ -201,8 +186,6 @@ Payment settlement remains outside AAuth; the implemented challenge carrier is
   Establishment (1686–1740), Deferred Responses (2478–2568), and Pending URL
   Security (2835–2841).
 - SHA-256: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
-
-This note is a list, not a second manifest row.
 
 ## Executed behavior: Sub-Agents
 
@@ -260,9 +243,6 @@ token, and how many are live per parent, remains host policy.
 - Section: `# Sub-Agent Tokens` at line 339 (lines 339–400), with `## Self-Hosted
   Sub-Agents` (343–367) and `## Sub-Agents Under a Hosted AP` (369–400).
 - SHA-256: `40ca9d052e942a78ef01a827a23bd0149d34a58f626e750949f3ddcd2601b82c`.
-
-The overlays are lists, not table rows, because the baseline manifest check
-requires exactly one table row per source file.
 
 ## Native R3 vocabulary baselines
 
@@ -359,8 +339,6 @@ chaining, and per-call R3 stay outside this path.
   Unreported Allocations (827–857), and Usage Counters (929–1075).
 - SHA-256: `f00d34c91576476cdb30b7aa1aa13a0bc9fc1d99fc43b4f0389ccb3e8bf2e150`.
 
-This note is a list, not a second manifest row.
-
 ## Implementation relationship
 
 ### AAuth Core
@@ -378,20 +356,21 @@ the polymorphic `EdDSA` identifier as an equivalent spelling.
 
 ### HTTP Signature Keys
 
-The current role paths use `jwt`, `jwks_uri`, `hwk`, and the Ed25519 and
-ES256 `jkt-s256+jwt` subset of `jkt-jwt`, plus a bounded set of shared
-message-signature behavior. Other schemes, complete negotiation, and generic
-replay enforcement remain explicit gaps in [CONFORMANCE.md](CONFORMANCE.md).
+The role paths use `jwt`, `jwks_uri`, `hwk`, and the Ed25519 and ES256
+`jkt-s256+jwt` subset of `jkt-jwt`, plus a bounded set of shared
+message-signature behavior. `jwks`, `x509` and `cached` are implemented in
+`signaturekey`, and a Resource accepts them through `FurtherSchemes`. Complete
+negotiation and generic replay enforcement remain gaps; see
+[CONFORMANCE.md](CONFORMANCE.md#http-signature-keys).
 
 ### Companion specifications and interoperability
 
 R3, Events, Bootstrap, Budgets, Supervision, and the interoperability profile
 are pinned as first-class inputs even where behavior is absent. Supervision
 executes in the `supervision`, `supervisionserver` and `personserver`
-packages, with the limits [CONFORMANCE.md](CONFORMANCE.md) lists. This
-repository has one executing two-key repository
-profile; its application-selected endpoints and JSON remain implementation
-choices because the source is informational.
+packages, with the limits [CONFORMANCE.md](CONFORMANCE.md) lists. The
+Bootstrap enrollment and refresh endpoints and their JSON are this library's
+choices, because that draft is informational.
 [CONFORMANCE.md](CONFORMANCE.md) separates reusable Core primitives from an
 executing companion-spec path, and [ARCHITECTURE.md](ARCHITECTURE.md) assigns
 new behavior without moving companion semantics into the Core package.

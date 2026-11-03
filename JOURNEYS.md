@@ -49,7 +49,7 @@ Specifications:
     coordination, browser authentication, mission or Budget authorization, or
     independent implementation interoperability.
 
-- [x] **Hosted durable process walkthrough — Implemented and externally qualified**
+- [x] **Hosted durable process walkthrough — Implemented**
   - Flow: laptop durable-key enrollment over TLS → authenticated hosted
     account login → host-created connector credential → reviewed mission →
     MCP class authorization under a fixed Budget → one retained connector
@@ -61,14 +61,9 @@ Specifications:
   - Evidence: `walkthrough/hosted/acceptance_test.go` and the public enrollment,
     mission, mission-plus-R3, R3 document, R3 issuance, and Budget contracts in
     `walkthrough/hosted/store_contract_test.go`.
-  - Qualification: revision `7bad00b7ae6dfe3b093157c8e63ddb8540ee78b2`
-    was fetched, tested, vetted, and built on a clean Ubuntu 24.04 host. A
-    separate laptop Agent then completed the journey over public-network TLS,
-    recovered the exact result after host restart and loss of its final result
-    cache, and observed revocation before a second connector dispatch.
-  - Boundary: the qualification used generated certificates, a direct test
-    address override, and the single-process stores documented by the
-    walkthrough. It does not claim production hosting infrastructure.
+  - Boundary: generated certificates, an optional direct address override for
+    test hosts, and the single-process stores documented by the walkthrough.
+    It does not claim production hosting infrastructure.
 
 - [x] **Local Agent composition — Implemented**
   - Flow: self-hosted Agent Provider metadata and JWKS → self-issued Agent
@@ -106,20 +101,6 @@ Specifications:
     deployment.
 
 ## AAuth Protocol
-
-- [x] **Deferred four-party approval and payment — Implemented bounded path**
-  - Flow: Resource challenge → PS consent → AS `402` payment → host settlement
-    → PS-signed AS poll → `202` approval → grant → verified PS delivery → Resource.
-  - Read the [per-request composition limit](USE-IN-YOUR-SERVICE.md#continue-an-as-approval-or-payment-request), then run `go run ./example/federatedpayment`. Payment is simulated host
-    state; no payment provider is contacted.
-  - Evidence: [`example/federatedpayment/main_test.go`](example/federatedpayment/main_test.go)
-    and [`integration/federated_deferred_test.go`](integration/federated_deferred_test.go).
-  - Boundary: Core, `WWW-Authenticate` challenge carrier, explicit host-driven
-    polling, separate in-memory role stores. An AS interaction reaches an Agent
-    that declared `interaction` with the AS's URL and code; without it the PS
-    answers `user_unreachable` ([`integration/federated_deferred_test.go`](integration/federated_deferred_test.go)).
-    No clarification forwarding or deferred companion combinations.
-
 
 Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md).
 
@@ -170,25 +151,21 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [`integration/core_four_party_test.go`](integration/core_four_party_test.go),
     and `go run ./example/fourparty`.
 
-- [x] **Agent enrollment and refresh — Implemented**
-  - Flow: Agent → AP with a durable inline key → retained Agent identity →
-    Agent token → either delegated-key or direct durable-key refresh → exact
-    replay returns the retained token → host disables, restores, or permanently
-    revokes the enrollment → new refresh is refused while already-issued tokens
-    remain bounded by their signed expiry.
-  - Start with: `agent.NewBootstrapClient`, `BootstrapClient.Enroll`,
-    `BootstrapClient.Refresh`, `BootstrapClient.RefreshSingleKey`,
-    `agentprovider.NewEnrollmentService`, and
-    `agentprovider.EnrollmentStore.TransitionEnrollment`.
-  - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go),
-    [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go),
-    and `go run ./example/bootstrap`.
-  - Host boundary: Bootstrap makes platform attestation optional AP policy
-    (Bootstrap line 208). The host's `Enroll` and `Refresh` callbacks verify
-    whatever the AP requires, carried as signed `evidence`; a refresh body may
-    omit it. A durable-key change is a new enrollment and so a new Agent
-    (line 337). AP signing-key rollover is the separate AP-KEY-ROLLOVER gap
-    in [CONFORMANCE.md](CONFORMANCE.md).
+- [x] **Deferred four-party approval and payment — Implemented bounded path**
+  - Flow: Resource challenge → PS consent → AS `402` payment → host settlement
+    → PS-signed AS poll → `202` approval → grant → verified PS delivery → Resource.
+  - Read the [per-request composition limit](USE-IN-YOUR-SERVICE.md#continue-an-as-approval-or-payment-request), then run `go run ./example/federatedpayment`. Payment is simulated host
+    state; no payment provider is contacted.
+  - Evidence: [`example/federatedpayment/main_test.go`](example/federatedpayment/main_test.go)
+    and [`integration/federated_deferred_test.go`](integration/federated_deferred_test.go).
+  - Boundary: Core, `WWW-Authenticate` challenge carrier, explicit host-driven
+    polling, separate in-memory role stores. An AS interaction reaches an Agent
+    that declared `interaction` with the AS's URL and code; without it the PS
+    answers `user_unreachable` ([`integration/federated_deferred_test.go`](integration/federated_deferred_test.go)).
+    No clarification forwarding or deferred companion combinations.
+
+Agent enrollment and refresh, which Core leaves to Bootstrap, are under
+[AAuth Bootstrap Guidance](#aauth-bootstrap-guidance).
 
 ### Bounded journeys
 
@@ -248,8 +225,11 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     update or completion (the Agent handles both); a helper that waits between
     polls; a durable production
     adapter; recovery after an uncertain initial or terminal response;
-    delegation; held delivery; and revocation. A mission does travel through
-    three- and four-party call chains; see the call chaining journey below.
+    delegation; and held delivery. A host ends a mission, and revokes the
+    tokens issued under it, with `TerminateMission`
+    ([`integration/mission_termination_test.go`](integration/mission_termination_test.go)).
+    A mission does travel through three- and four-party call chains; see the
+    call chaining journey below.
 
 - [ ] **Parent-mediated sub-agents and one Resource call chain — Partial**
   - Flow: the parent's own AP issues the child from the parent's token →
@@ -275,8 +255,7 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [`integration/call_chaining_hops_test.go`](integration/call_chaining_hops_test.go),
     [`personserver/agent_binding_lifecycle_test.go`](personserver/agent_binding_lifecycle_test.go),
     `go run ./example/subagent` (the hosted sub-agent request through the AS
-    wait), and `go run ./example/callchaining`. The shared
-    harness's `authorization.subagent` slice measures the same native roles.
+    wait), and `go run ./example/callchaining`.
   - A four-party chained request carries its own hop's Budget ceiling to the
     AS, and an AS interaction reaches the intermediary with the AS's URL and
     code ([`integration/call_chaining_hops_test.go`](integration/call_chaining_hops_test.go)).
@@ -325,9 +304,12 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     `RevocationClient.RevokeAgent` revokes each unexpired token of an Agent
     at the Person Server it names
     ([`integration/agent_token_revocation_test.go`](integration/agent_token_revocation_test.go)).
-  - Missing: Auth-token four-party propagation, recipient entry or rate
-    enforcement, deferred `202` polling, mission cascade, automatic retry, and
-    session revocation.
+  - Cascades: person- and resource-token revocation at every recipient,
+    four-party Auth-token revocation by the Access Server, pending `202`
+    revocations, per-caller rate limits, and the mission cascade are described
+    in [Revoke person and resource tokens](USE-IN-YOUR-SERVICE.md#revoke-person-and-resource-tokens)
+    and run in [`integration/revocation_cascade_test.go`](integration/revocation_cascade_test.go).
+  - Missing: automatic retry and session revocation.
 
 - [x] **Missionless local-action permission — Implemented**
   - Flow: Agent → PS with one signed local-action request → immediate decision
@@ -432,17 +414,12 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Missing: durable adapters, complete cross-event mission-log recording, and
     stable uncertain-initial-submission recovery.
 
-### Bounded four-party journey
+### Not implemented
 
 - [ ] **Complete PS governance and mission log — Not implemented.** The
   bounded stores retain approval, accepted updates, mission-bound permission,
   Audit, and completion, but there is no single ordered log across all required
   PS interactions or complete governance-policy history.
-- [ ] **Third-party login — Not implemented; removed upstream.** The baseline
-  Login Flow did not supply the person context required by a Resource token.
-  Protocol -11 removed Third-Party Login and `login_endpoint` rather than
-  defining a login-only token. See the resolved `AAG-F103` entry in
-  [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 - [ ] **General deferred composition — Not implemented.** Existing pending
   paths do not yet compose AS deferral, mission deferral, correlated
   multi-round clarification, updated requests, claims, and payment through one
@@ -518,14 +495,21 @@ Pinned source: [HTTP Signature Keys editor source](https://github.com/dickhardt/
     signature over the same logical operation has a different value.
   - Evidence: [`signaturekey/request_external_test.go`](signaturekey/request_external_test.go)
     checks that verified proofs expose the fingerprint.
-  - Missing: no role store consumes `ReplayKey`, and there is no generic
-    operation-level replay contract. Focused journeys such as Agent-token
-    refresh derive their own stable request identity instead.
+  - `signaturekey.ReplayCache` refuses a repeated proof by key, `created`,
+    method, authority and path; see
+    [Verify a signed request after a delay](USE-IN-YOUR-SERVICE.md#verify-a-signed-request-after-a-delay).
+  - Missing: a generic operation-level replay contract. Focused journeys such
+    as Agent-token refresh derive their own stable request identity.
 
-### Not implemented
-
-- [ ] **`jwks`, `x509`, and provisional `cached` schemes — Not implemented.**
-  No complete signing-and-verification journey exists for these schemes.
+- [ ] **`jwks`, `x509`, and `cached` schemes — Partial**
+  - `signaturekey` signs and verifies all three, and a Resource accepts them
+    from clients outside AAuth through `FurtherSchemes`; see
+    [Verify other Signature-Key schemes](USE-IN-YOUR-SERVICE.md#verify-other-signature-key-schemes).
+  - Evidence: [`signaturekey/jwks_external_test.go`](signaturekey/jwks_external_test.go),
+    [`signaturekey/x509_external_test.go`](signaturekey/x509_external_test.go),
+    [`signaturekey/cache_external_test.go`](signaturekey/cache_external_test.go),
+    and [`resource/further_schemes_test.go`](resource/further_schemes_test.go).
+  - Missing: no AAuth role-to-role journey uses these schemes.
 
 ## AAuth Rich Resource Requests (R3)
 
@@ -707,10 +691,11 @@ below is explicitly a repository profile.
   - Flow: Agent → AP enrollment handler with an `hwk` durable key → AP retains
     a stable Agent identity → Agent creates a fresh proof key → durable key
     delegates through `jkt-jwt` while the fresh key signs refresh → AP returns
-    an exact retained Agent token → Agent uses it on a Resource request → an
-    authenticated host atomically revokes the enrollment → a fresh refresh is
-    refused. Already-issued Agent tokens remain valid only until their signed
-    expiry.
+    an exact retained Agent token, and an exact replay returns it again → Agent
+    uses it on a Resource request → an authenticated host atomically disables,
+    restores, or permanently revokes the enrollment → while disabled or
+    revoked, a fresh refresh is refused. Already-issued Agent tokens remain
+    valid only until their signed expiry.
     In the single-key variant, the durable key signs refresh directly through
     `hwk` and remains the Agent-token confirmation key.
   - Start with: `agentprovider.NewEnrollmentService`,
@@ -726,7 +711,12 @@ below is explicitly a repository profile.
     and `go run ./example/bootstrap`.
   - Host boundary: applications supply attestation/evidence policy and a
     durable `agentprovider.EnrollmentStore`; the repository supplies no
-    database adapter.
+    database adapter. Bootstrap makes platform attestation optional AP policy
+    (Bootstrap line 208). The host's `Enroll` and `Refresh` callbacks verify
+    whatever the AP requires, carried as signed `evidence`; a refresh body may
+    omit it. A durable-key change is a new enrollment and so a new Agent
+    (line 337). AP signing-key rollover is a separate gap, the AP signing-key
+    overlap row in [CONFORMANCE.md](CONFORMANCE.md).
 
 - [x] **Self-hosted Agent issuance and use — Implemented source profile**
   - Flow: user-controlled Agent origin → ordinary AP metadata and JWKS → Agent
@@ -851,7 +841,7 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
     and call chaining are a separate journey.
     Variable-cost reservation is a separate journey.
 
-### Not implemented
+### Other Budget paths
 
 - [x] **Variable-cost reservation — Implemented as a store and protected path.**
   `BudgetConfig.Maximum` reserves a finite bound before dispatch. The handler
@@ -873,7 +863,9 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
   A store that implements `resource.BudgetUsageStore` publishes
   `usage_endpoint` and answers a signed Person Server or Access Server
   `POST /usage`. Counters are UTC calendar totals plus per-key figures.
-  `budgets.PostUsage` sends the query. The response is not signed. A step-up
+  The Resource signs each answer with its own key, and
+  `budgets.PostUsageChecked` sends the query and verifies the answer; see
+  [Sign and verify Budget usage](USE-IN-YOUR-SERVICE.md#sign-and-verify-budget-usage). A step-up
   Resource token may carry `budget_consumed`; the direct PS and the AS verify
   it and deliver the record to policy without retaining the prior grant.
 - [x] **Mission-bound fixed Budget — Implemented in both authorization topologies**
@@ -916,7 +908,7 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
 
 ## AAuth Supervision
 
-- [x] **One person's Agents under their supervisors — Partial**
+- [ ] **One person's Agents under their supervisors — Partial**
   - Flow: Person Server routes each Agent to its deciding supervision server →
     the person confirms their own supervisor, an organization's accepts its
     tenant at once → mission proposal refined by the supervisor → auth token
@@ -936,9 +928,8 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
   - Evidence: `integration/supervision_test.go`,
     `supervisionserver/server_test.go`, `supervision/wire_test.go`.
   - Boundary: in-memory stores and one process; no independent implementation
-    has been run against these roles, though the open wire choices match
-    aauth-rust's. R3, Resource-initiated interaction and a resource token's
-    `revocation.received` are outside it; see
+    has been run against these roles. An `updated_request` that answers the
+    person's own question, or that brings an R3 document, is refused; see
     [CONFORMANCE.md](CONFORMANCE.md#companion-specifications).
 
 ## AAuth interoperability demo profile
@@ -993,39 +984,17 @@ sentences.
     and `go run ./example/subagent`.
   - Missing: mission-bound composition.
 
-- [x] **Agent identity at an independent Resource — Historical qualification (2026-09-01)**
-  - Flow: AAuth Go Agent Provider metadata and JWKS → Go-minted Agent token →
-    Go-signed identity request → the AAuth project's live TypeScript `whoami`
-    Resource → exact provider issuer and Agent identifier returned.
-  - Start with: [`walkthrough/interop`](walkthrough/interop).
-  - Qualification (2026-09-01): published AAuth Go source
-    `00eb6f0a2a3000ff96a44b988059acea3c2babf0` called
-    [`aauth-dev/whoami`](https://github.com/aauth-dev/whoami) revision
-    `9f023d27ba51e0c11018e416b23140fbea14c9ff` over public HTTPS and received
-    HTTP 200 with the exact generated identity.
-  - Boundary: this historical run is one independently parsed and verified
-    Core identity surface. It is not bidirectional and does not exercise person identity,
-    authorization, an Access Server, R3, or the five profile surfaces. It does
-    not qualify the current checkout.
-
-- [x] **Official TypeScript Agent at Go authorization roles — Historical qualification (2026-09-01)**
-  - Flow: official `@aauth/agent` → Go Person Server for a directed Person
-    token → Go Resource for a Resource token → Go Person Server for an Auth
-    token → Go Resource for one durable protected note.
-  - Start with: [`walkthrough/interop`](walkthrough/interop), including its
-    pinned `typescript-agent` module.
-  - Qualification (2026-09-01): repository revision
-    `8283d98718220973100c197818e512a42be179c1` used AAuth Go
-    `32eab26ea255e99d97b5b407b3b1f9f76163c954` and
-    [`aauth-dev/packages-js`](https://github.com/aauth-dev/packages-js)
-    `7bd31a502904272267812e2cd26c231d0f950555` over public TLS. Same-key
-    replay, changed-input conflict, service restart, and post-restart recovery
-    all left one durable note.
-  - Boundary: this historical run tested one independent Agent implementation
-    against Go PS and Resource roles. It does not prove an independent PS or AS, R3, or all
-    five demo-profile surfaces. It does not qualify the current checkout.
-    The standalone module retains its older Go pin; its JavaScript unit test
-    uses a stubbed `fetch` and does not call the Go roles.
+- [ ] **Independent implementations at single surfaces — Partial, at an older pin**
+  - Flow: a Go Agent's identity request to the AAuth project's TypeScript
+    [`whoami`](https://github.com/aauth-dev/whoami) Resource; and the official
+    `@aauth/agent` through a Go Person Server and Go Resource to one durable
+    protected note.
+  - Start with: [`walkthrough/interop`](walkthrough/interop), whose README
+    records the revisions each run used.
+  - Boundary: the walkthrough pins an older AAuth Go commit, so these runs do
+    not qualify the current checkout. Neither exercises an independent PS or
+    AS, R3, or the five profile surfaces. Its JavaScript unit test uses a
+    stubbed `fetch` and does not call the Go roles.
 
 - [ ] **Independent five-surface profile interoperability — Not implemented**
   - Existing internal Surfaces 1–5 have not crossed an independent role

@@ -77,7 +77,7 @@ host-controlled enrollment transition, so the example does not claim that its
 Agent Provider can be suspended or revoked by the hosted service. Hosted
 Person Server and Resource policy still decide whether to accept its tokens.
 
-That example proves the features can share one configured environment. It
+That example runs these features in one configured environment. It
 charges one MCP connector call, verifies that an exhausted-Budget step-up is
 returned before a second connector dispatch, exchanges the replacement token,
 resumes one connector call under the fresh grant, and retains the person's
@@ -98,7 +98,7 @@ go run ./example/revocation
 
 ## Required launch capabilities
 
-| Capability | Current implementation boundary |
+| Capability | Implementation boundary |
 | --- | --- |
 | Agent entry profile | Either hosted two-key or single-key enrollment and refresh, or a self-hosted Agent Provider that publishes ordinary metadata/JWKS and self-issues short-lived tokens. Hosted endpoints and application evidence remain host choices because Bootstrap does not standardize them. |
 | Enrollment suspension and revocation | Host-authenticated atomic state transition; disabled is reversible, revoked is terminal, and exact retries recover the retained transition. |
@@ -137,22 +137,20 @@ polls, or choose business policy. The host must:
 
 ## Deferred from this profile
 
-The first hosted profile does not require every AAuth deployment combination.
-It deliberately defers:
+The profile does not require every AAuth deployment combination. It leaves
+out:
 
 - complete role journeys for every R3 vocabulary;
-- variable-price and streaming Budget profiles;
-- third-party login, whose current Core flow is internally incomplete;
+- variable-price and streaming Budget profiles, which the library supports;
 - arbitrary recursive delegation and unbounded call chains;
 - a complete cross-endpoint mission log and mission clarification control plane;
 - a verifier for any platform attestation, such as WebAuthn, App Attest or
   Play Integrity;
-- AP signing-key rollover, the AP-KEY-ROLLOVER gap; and
-- independent-implementation interoperability claims.
+- AP signing-key rollover; see
+  [Plan AP signing-key rotation](USE-IN-YOUR-SERVICE.md#plan-ap-signing-key-rotation).
 
-These omissions remain visible in [CONFORMANCE.md](CONFORMANCE.md) and
-[JOURNEYS.md](JOURNEYS.md). They do not weaken the behavior claimed by this
-profile.
+[CONFORMANCE.md](CONFORMANCE.md) and [JOURNEYS.md](JOURNEYS.md) list what
+the library does not implement.
 
 Platform attestation is optional AP policy in Bootstrap (draft line 208), so
 the profile carries any attestation as signed `evidence` and the host's

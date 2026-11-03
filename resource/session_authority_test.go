@@ -12,7 +12,8 @@ import (
 
 // Core at a99d353, AAuth-Access Header, authenticates Agent proofs before
 // creating or loading sessions. Local authority admission also applies to this
-// Resource surface; see INTERPRETATIONS.md, Resource request authority admission.
+// Resource surface; see INTERPRETATIONS.md, "Resource handlers admit their
+// configured authority".
 func TestResourceManagedRejectsForeignAuthorityBeforeSessionAccess(t *testing.T) {
 	protocol := newResourceSessionProtocol(t)
 	store := newMemorySessionStore()
