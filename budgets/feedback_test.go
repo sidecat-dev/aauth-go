@@ -70,6 +70,26 @@ func TestRefusalFeedbackReportsTheRemainderAndOptionalRequiredAmount(t *testing.
 	}
 }
 
+func TestParseFeedbackAcceptsTheFifteenDigitMaximumBeforeAnotherMember(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := ParseFeedback([]string{`remaining=999999999999999, cost=0`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Remaining() != 999999999999999 {
+		t.Fatalf("remaining = %d", parsed.Remaining())
+	}
+	cost, ok := parsed.Cost()
+	if !ok || cost != 0 {
+		t.Fatalf("cost = %d present %v", cost, ok)
+	}
+	// A 16-digit integer is still outside the carrier, including when it is last.
+	if _, err := ParseFeedback([]string{`remaining=1, cost=1000000000000000`}); err == nil {
+		t.Fatal("16-digit cost accepted")
+	}
+}
+
 func TestParseFeedbackIgnoresExtensionsButRequiresValidKnownMembers(t *testing.T) {
 	t.Parallel()
 

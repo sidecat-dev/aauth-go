@@ -3,6 +3,7 @@ package budgets
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/dunglas/httpsfv"
 )
@@ -154,7 +155,7 @@ func (feedback Feedback) Unit() (Unit, bool) {
 // ParseFeedback parses one or more AAuth-Budget field lines as an RFC 9651
 // Dictionary. Unknown members are ignored.
 func ParseFeedback(values []string) (Feedback, error) {
-	dictionary, err := httpsfv.UnmarshalDictionary(values)
+	dictionary, err := unmarshalBudgetDictionary(values)
 	if err != nil {
 		return Feedback{}, fmt.Errorf("budgets: parse AAuth-Budget: %w", err)
 	}
@@ -325,6 +326,105 @@ func (feedback Feedback) validate() error {
 		}
 	}
 	return nil
+}
+
+// unmarshalBudgetDictionary parses an AAuth-Budget dictionary.
+//
+// github.com/dunglas/httpsfv v1.1.1 rejects a 15-digit integer when another
+// character follows it, before it looks at that character. RFC 9651 allows
+// 999999999999999, and the Budgets draft uses that as the carrier maximum.
+// A field that fails only for that reason is parsed one member at a time.
+// A 15-digit integer with nothing after it already parses, and a 16-digit
+// integer still fails.
+func unmarshalBudgetDictionary(values []string) (*httpsfv.Dictionary, error) {
+	dictionary, err := httpsfv.UnmarshalDictionary(values)
+	if err == nil || !errors.Is(err, httpsfv.ErrNumberOutOfRange) {
+		return dictionary, err
+	}
+	members, splitErr := splitSFVMembers(strings.Join(values, ","))
+	if splitErr != nil {
+		return nil, err
+	}
+	merged := httpsfv.NewDictionary()
+	for _, member := range members {
+		one, parseErr := httpsfv.UnmarshalDictionary([]string{member})
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		for _, name := range one.Names() {
+			if _, exists := merged.Get(name); exists {
+				return nil, err
+			}
+			value, _ := one.Get(name)
+			merged.Add(name, value)
+		}
+	}
+	return merged, nil
+}
+
+// splitSFVMembers divides a dictionary on commas that are not inside a
+// string or an inner list. It is the fallback for the 15-digit parser bug,
+// not a general structured-field parser.
+func splitSFVMembers(field string) ([]string, error) {
+	var members []string
+	var b strings.Builder
+	inString := false
+	escaped := false
+	depth := 0
+	for _, r := range field {
+		if inString {
+			b.WriteRune(r)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inString = true
+			b.WriteRune(r)
+		case '(':
+			depth++
+			b.WriteRune(r)
+		case ')':
+			if depth == 0 {
+				return nil, errors.New("budgets: unbalanced inner list")
+			}
+			depth--
+			b.WriteRune(r)
+		case ',':
+			if depth == 0 {
+				member := strings.TrimSpace(b.String())
+				if member == "" {
+					return nil, errors.New("budgets: empty dictionary member")
+				}
+				members = append(members, member)
+				b.Reset()
+				continue
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if inString || escaped || depth != 0 {
+		return nil, errors.New("budgets: unclosed structured-field member")
+	}
+	if member := strings.TrimSpace(b.String()); member != "" {
+		members = append(members, member)
+	}
+	if len(members) == 0 {
+		return nil, errors.New("budgets: empty dictionary")
+	}
+	return members, nil
 }
 
 func feedbackInteger(dictionary *httpsfv.Dictionary, name string) (int64, bool, error) {
