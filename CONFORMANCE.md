@@ -1,17 +1,29 @@
 # Conformance status
 
-This repository implements direct Agent and Person identity access,
-Resource-managed opaque sessions, immediate and deferred three-party PS
-authorization, immediate four-party federation, bounded AS approval and payment
-continuations, one-level parent-mediated sub-agent authorization through both
-topologies, mission-bound authorization through both topologies, bounded
-Agent-token, Agent-binding and three-party Auth-token revocation, and the
-other bounded paths described below. The implementation follows the editor
-sources pinned in [SPECIFICATIONS.md](SPECIFICATIONS.md). It also includes
-Person-Server-hosted interaction and baseline or Resource-held delivery of the
-auth-token requirement. It is not a complete implementation of AAuth Core,
-HTTP Signature Keys, or the companion drafts. It does not claim official or
-certified status.
+This document gives aauth-go's per-requirement status against the pinned editor
+drafts of AAuth and its companions. [SPECIFICATIONS.md](SPECIFICATIONS.md) lists
+the pins.
+
+The [aauth-conformance](https://gitlab.com/sidecat-dev/aauth-conformance) suite
+measures it through the suite's Go launcher. The suite's `conformance-map.edn`
+records the result for each suite clause and the draft sentences it reaches.
+
+| `e76d864`, suite `a63c1c0` | Result |
+| --- | --- |
+| Roles | 24 of 24 offered, all passed |
+| Assertions | 1,606 pass, 0 fail, 0 not claimed |
+| Suite clauses | 338 of 338 pass |
+
+The suite grades only the clauses its scenarios reach. Of the 1,067 keyword
+sentences in the pinned drafts, 433 sit in sections no scenario reaches and are
+not measured. No percentage of a draft and no official or certified status is claimed.
+
+Below are dated blocks of what each change added, then status tables for AAuth
+Core, HTTP Signature Keys, the JOSE profile, storage and the companion drafts.
+
+Updating this document: check
+- after a library change: rerun the suite, regenerate the map, update the figures and the row the change touches;
+- after a suite change: the suite commit and the counts.
 
 Changes on 2026-11-02 (not released):
 
