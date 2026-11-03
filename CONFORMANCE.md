@@ -16,15 +16,12 @@ their pinned commits are in [SPECIFICATIONS.md](SPECIFICATIONS.md).
 
 | Item | Value |
 | --- | --- |
-| Suite | map at `dbf640d`; the run used `7c26f5b`, which has the same suite digest |
-| Library | `48a93b4`, no tag |
+| Suite | map at `ff45ab3`; the run used `afcbb3b`, which has the same suite digest |
+| Library | `e76d864`, no tag |
 | Roles | 24 of 24 offered, all passed |
-| Assertions | 1,601 pass, 0 fail, 0 not claimed |
-| Suite clauses | 337 of 337 pass |
+| Assertions | 1,606 pass, 0 fail, 0 not claimed |
+| Suite clauses | 338 of 338 pass |
 
-The measured commit is not the newest. `e76d864` on main adds one library
-change after it: an Agent Provider accepts a Bootstrap refresh body without
-evidence. This map has no full run of `e76d864` or any later commit.
 
 ## What it does not say
 
