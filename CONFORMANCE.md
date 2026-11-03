@@ -22,7 +22,6 @@ their pinned commits are in [SPECIFICATIONS.md](SPECIFICATIONS.md).
 | Assertions | 1,606 pass, 0 fail, 0 not claimed |
 | Suite clauses | 338 of 338 pass |
 
-
 ## What it does not say
 
 - **A clause with no scenario is not measured.** In the map, those are the
