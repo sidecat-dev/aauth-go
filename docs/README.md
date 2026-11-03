@@ -76,6 +76,8 @@ outside service. Run each from a clone of the repository.
 | `go run ./example/supervision` | one person, two agents, two supervision servers |
 | `go run ./example/subagent` | a parent agent getting credentials for a sub-agent |
 | `go run ./example/revocation` | revoking tokens, and recovering with a fresh Person token |
+| `go run ./example/bootstrap` | an Agent Provider enrolling an agent's durable key and refreshing its Agent token, two-key and single-key |
+| `go run ./example/selfhosted` | a domain that is its own Agent Provider, issuing its agents' tokens |
 
 The `walkthrough/` directories run the roles as separate TLS processes with
 state on disk. Each is its own Go module, pinned to an older commit of this

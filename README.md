@@ -85,9 +85,9 @@ code, so that every build uses the same commit. To move to a later commit, run
 ## Status
 
 The packages implement the core AAuth protocol and HTTP Signature Keys, and
-the R3, Budgets, Events and Supervision drafts, each with the limits listed in
-[CONFORMANCE.md](CONFORMANCE.md). Agent enrollment from the Bootstrap draft is
-partial. APIs can change from one commit to the next.
+the R3, Budgets, Events, Supervision and Bootstrap drafts, each with the
+limits listed in [CONFORMANCE.md](CONFORMANCE.md). APIs can change from one
+commit to the next.
 
 [aauth-rust](https://gitlab.com/sidecat-dev/aauth-rust) implements the same
 drafts in Rust. The two are tested against each other over HTTPS, in both
