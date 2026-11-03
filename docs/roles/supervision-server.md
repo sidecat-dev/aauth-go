@@ -20,17 +20,17 @@ sequenceDiagram
     participant Agent
     participant PS as Person Server
     participant SS as Supervision Server
-    PS->>SS: POST /connect, for this person
-    SS-->>PS: 200 connected (or 202 while the person confirms)
-    Agent->>PS: POST /permission, payments.send
-    PS->>SS: POST /decision
-    Note over SS: Decide: allow, deny or ask
-    SS-->>PS: 200 ask, signed
-    PS-->>Agent: 202, requirement=approval
-    Note over PS: the person answers at the Person Server
-    PS->>SS: POST /event, decision.resolved
-    Agent->>PS: GET /pending/{id}
-    PS-->>Agent: 200 granted
+    PS->>SS : POST /connect, for this person
+    SS-->>PS : 200 connected (or 202 while the person confirms)
+    Agent->>PS : POST /permission, payments.send
+    PS->>SS : POST /decision
+    Note over SS : Decide answers allow, deny or ask
+    SS-->>PS : 200 ask, signed
+    PS-->>Agent : 202, requirement=approval
+    Note over PS : the person answers at the Person Server
+    PS->>SS : POST /event, decision.resolved
+    Agent->>PS : GET /pending/{id}
+    PS-->>Agent : 200 granted
 ```
 
 ## Smallest working code

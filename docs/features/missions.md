@@ -23,22 +23,22 @@ sequenceDiagram
     participant Agent
     participant PS as Person Server
     participant Resource
-    Agent->>PS: POST /mission, the proposal
-    PS-->>Agent: 202, requirement=approval
-    Note over PS: the person approves<br/>(ApproveMissionProposal)
-    Agent->>PS: GET /mission/pending/{id}
-    PS-->>Agent: 200: the mission, its s256, a Person token per Resource
-    Agent->>PS: POST /mission/{s256}, update
-    PS-->>Agent: 200
-    Agent->>Resource: POST /authorize, with the mission's Person token
-    Resource-->>Agent: Resource token carrying mission_s256
-    Agent->>PS: POST /token
-    Note over PS: Authorize sees the mission and its updates
-    PS-->>Agent: Auth token carrying mission_s256
-    Agent->>Resource: GET /records/42
-    Resource-->>Agent: 200
-    Agent->>PS: POST /mission/{s256}, completion
-    PS-->>Agent: 200
+    Agent->>PS : POST /mission, the proposal
+    PS-->>Agent : 202, requirement=approval
+    Note over PS : the person approves<br/>(ApproveMissionProposal)
+    Agent->>PS : GET /mission/pending/{id}
+    PS-->>Agent : 200: the mission, its s256, a Person token per Resource
+    Agent->>PS : POST /mission/{s256}, update
+    PS-->>Agent : 200
+    Agent->>Resource : POST /authorize, with the mission's Person token
+    Resource-->>Agent : Resource token carrying mission_s256
+    Agent->>PS : POST /token
+    Note over PS : Authorize sees the mission and its updates
+    PS-->>Agent : Auth token carrying mission_s256
+    Agent->>Resource : GET /records/42
+    Resource-->>Agent : 200
+    Agent->>PS : POST /mission/{s256}, completion
+    PS-->>Agent : 200
 ```
 
 ## Smallest working code

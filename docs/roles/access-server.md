@@ -20,16 +20,16 @@ sequenceDiagram
     participant Resource
     participant PS as Person Server
     participant AS as Access Server
-    Agent->>Resource: POST /authorize, signed with the Person token
-    Resource-->>Agent: Resource token addressed to the AS
-    Agent->>PS: POST /token with the Resource token and the Person token
-    Note over PS: Consent: does the person agree?
-    PS->>AS: POST /token, signed by the PS, with the agent's three tokens
-    Note over AS: TrustPersonServer, then Authorize
-    AS-->>PS: 200 Auth token
-    PS-->>Agent: 200 Auth token
-    Agent->>Resource: request, signed with the Auth token
-    Resource-->>Agent: 200
+    Agent->>Resource : POST /authorize, signed with the Person token
+    Resource-->>Agent : Resource token addressed to the AS
+    Agent->>PS : POST /token with the Resource token and the Person token
+    Note over PS : Consent decides whether the person agrees
+    PS->>AS : POST /token, signed by the PS, with the agent's three tokens
+    Note over AS : TrustPersonServer, then Authorize
+    AS-->>PS : 200 Auth token
+    PS-->>Agent : 200 Auth token
+    Agent->>Resource : request, signed with the Auth token
+    Resource-->>Agent : 200
 ```
 
 The Access Server can also make the request wait: `202` for an approval,

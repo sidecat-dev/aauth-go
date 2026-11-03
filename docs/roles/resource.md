@@ -26,7 +26,7 @@ flowchart TD
     E -->|no| E1[401 with Signature-Error]
     E -->|yes| F{Token grants what this route needs?}
     F -->|no| F1[401 auth-token challenge, or 403]
-    F -->|yes| G[Your handler: read the caller from the context, apply policy]
+    F -->|yes| G[Your handler reads the caller from the context and applies policy]
 ```
 
 ## Smallest working code

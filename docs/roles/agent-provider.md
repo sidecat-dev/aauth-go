@@ -19,13 +19,13 @@ sequenceDiagram
     participant Agent
     participant AP as Agent Provider
     participant API as Resource
-    Agent->>Agent: make a key pair
-    Agent->>AP: the public key, and proof of who it is (your choice of how)
-    AP-->>Agent: Agent token naming that key
-    Agent->>API: request, signed with the private key, with the Agent token
-    API->>AP: GET /.well-known/aauth-agent.json
-    API->>AP: GET /.well-known/jwks.json
-    API-->>Agent: 200
+    Agent->>Agent : make a key pair
+    Agent->>AP : the public key, and proof of who it is (your choice of how)
+    AP-->>Agent : Agent token naming that key
+    Agent->>API : request, signed with the private key, with the Agent token
+    API->>AP : GET /.well-known/aauth-agent.json
+    API->>AP : GET /.well-known/jwks.json
+    API-->>Agent : 200
 ```
 
 How the agent proves who it is to its provider is not part of the core

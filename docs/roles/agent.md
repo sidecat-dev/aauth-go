@@ -19,9 +19,9 @@ with each answer:
 
 ```mermaid
 flowchart TD
-    A[PersonToken: ask the Person Server for a Person token for this Resource] --> B[Authorize: ask the Resource for a Resource token]
-    B --> C[Exchange: take the Resource token to the Person Server for an Auth token]
-    C --> D[Do: send the request, signed with the Auth token]
+    A[PersonToken asks the Person Server for a Person token for this Resource] --> B[Authorize asks the Resource for a Resource token]
+    B --> C[Exchange takes the Resource token to the Person Server for an Auth token]
+    C --> D[Do sends the request, signed with the Auth token]
     D --> E{Answer}
     E -->|2xx| F[Done]
     E -->|error with a signaturekey.Error| G[Fix what the code names; see Errors]

@@ -22,16 +22,16 @@ sequenceDiagram
     participant Agent
     participant Resource
     participant PS as Person Server
-    Agent->>Resource: GET /records/current
-    Note over Resource: Cost: 150,000. Remaining 250,000
-    Resource-->>Agent: 204, AAuth-Budget: cost, remaining
-    Agent->>Resource: GET /records/export
-    Note over Resource: Cost: 300,000. Not enough: not run
-    Resource-->>Agent: 401, requirement=auth-token, reason=insufficient-budget,<br/>a fresh Resource token
-    Agent->>PS: POST /token, the fresh Resource token, the refused Auth token
-    PS-->>Agent: new Auth token for 400,000
-    Agent->>Resource: GET /records/export
-    Resource-->>Agent: 204, AAuth-Budget: cost 300,000, remaining 100,000
+    Agent->>Resource : GET /records/current
+    Note over Resource : Cost 150,000. Remaining 250,000
+    Resource-->>Agent : 204, AAuth-Budget with cost and remaining
+    Agent->>Resource : GET /records/export
+    Note over Resource : Cost 300,000. Not enough, so it does not run
+    Resource-->>Agent : 401, requirement=auth-token, reason=insufficient-budget,<br/>a fresh Resource token
+    Agent->>PS : POST /token, the fresh Resource token, the refused Auth token
+    PS-->>Agent : new Auth token for 400,000
+    Agent->>Resource : GET /records/export
+    Resource-->>Agent : 204, AAuth-Budget with cost 300,000, remaining 100,000
 ```
 
 ## Smallest working code

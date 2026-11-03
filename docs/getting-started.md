@@ -78,16 +78,16 @@ sequenceDiagram
     participant Agent
     participant AP as Agent Provider
     participant API as API (Resource)
-    Agent->>API: GET /hello, no signature
-    API-->>Agent: 401, AAuth-Requirement: requirement=agent-token
-    Note over Agent,AP: The provider issues an Agent token<br/>that names the agent's public key
-    Agent->>AP: GET /.well-known/aauth-agent.json, then /.well-known/jwks.json
-    Note over Agent: agent.New checks the agent's own token
-    Agent->>API: GET /.well-known/aauth-resource.json
-    API-->>Agent: the API's metadata
-    Agent->>API: GET /hello, signed, with the Agent token
-    API->>AP: GET /.well-known/aauth-agent.json, then /.well-known/jwks.json
-    API-->>Agent: 200 hello, aauth:assistant@ap.example
+    Agent->>API : GET /hello, no signature
+    API-->>Agent : 401, AAuth-Requirement with requirement=agent-token
+    Note over Agent,AP : The provider issues an Agent token<br/>that names the agent's public key
+    Agent->>AP : GET /.well-known/aauth-agent.json, then /.well-known/jwks.json
+    Note over Agent : agent.New checks the agent's own token
+    Agent->>API : GET /.well-known/aauth-resource.json
+    API-->>Agent : the API's metadata
+    Agent->>API : GET /hello, signed, with the Agent token
+    API->>AP : GET /.well-known/aauth-agent.json, then /.well-known/jwks.json
+    API-->>Agent : 200, hello and the agent's name
 ```
 
 The three lines of output are three requests:

@@ -21,16 +21,16 @@ sequenceDiagram
     participant Agent
     participant PS as Person Server
     participant Resource
-    Agent->>PS: POST /person, for this Resource (signed with the Agent token)
-    Note over PS: BindPerson: which person, and their<br/>identifier at this Resource
-    PS-->>Agent: 200 Person token
-    Agent->>Resource: POST /authorize, signed with the Person token
-    Resource-->>Agent: Resource token: the scopes it needs
-    Agent->>PS: POST /token with the Resource token and the Person token
-    Note over PS: Authorize: which of those scopes the person allows
-    PS-->>Agent: 200 Auth token
-    Agent->>Resource: request, signed with the Auth token
-    Resource-->>Agent: 200
+    Agent->>PS : POST /person, for this Resource (signed with the Agent token)
+    Note over PS : BindPerson picks the person and their<br/>identifier at this Resource
+    PS-->>Agent : 200 Person token
+    Agent->>Resource : POST /authorize, signed with the Person token
+    Resource-->>Agent : Resource token naming the scopes it needs
+    Agent->>PS : POST /token with the Resource token and the Person token
+    Note over PS : Authorize picks which of those scopes the person allows
+    PS-->>Agent : 200 Auth token
+    Agent->>Resource : request, signed with the Auth token
+    Resource-->>Agent : 200
 ```
 
 When the person has to be asked first, the Person Server answers `202` with

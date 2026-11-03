@@ -31,18 +31,18 @@ sequenceDiagram
     participant PS as Person Server
     participant SS as Supervision Server
     participant Person
-    Agent->>PS: POST /permission, payments.send, for this mission
-    PS->>SS: POST /decision
-    SS-->>PS: ask, signed
-    PS-->>Agent: 202, requirement=approval, Location: /pending/{id}
-    Person->>PS: allow, for the rest of the mission (through your page)
-    PS->>SS: POST /event, decision.resolved
-    Agent->>PS: GET /pending/{id}
-    PS-->>Agent: 200, granted
-    Agent->>PS: POST /permission, payments.send again
-    PS->>SS: POST /decision
-    SS-->>PS: allow, signed
-    PS-->>Agent: 200, granted
+    Agent->>PS : POST /permission, payments.send, for this mission
+    PS->>SS : POST /decision
+    SS-->>PS : ask, signed
+    PS-->>Agent : 202, requirement=approval, Location = /pending/{id}
+    Person->>PS : allow, for the rest of the mission (through your page)
+    PS->>SS : POST /event, decision.resolved
+    Agent->>PS : GET /pending/{id}
+    PS-->>Agent : 200, granted
+    Agent->>PS : POST /permission, payments.send again
+    PS->>SS : POST /decision
+    SS-->>PS : allow, signed
+    PS-->>Agent : 200, granted
 ```
 
 ## Run it

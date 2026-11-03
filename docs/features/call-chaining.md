@@ -20,18 +20,18 @@ sequenceDiagram
     participant Orders as Orders (intermediary)
     participant PS as Person Server
     participant Inventory
-    Agent->>PS: POST /person, POST /token (as in three-party access)
-    PS-->>Agent: Auth token A for Orders
-    Agent->>Orders: POST /orders/42/fulfill, signed with A
-    Orders->>PS: POST /person for Inventory, upstream_token = A
-    PS-->>Orders: Person token for Inventory
-    Orders->>Inventory: POST /authorize
-    Inventory-->>Orders: Resource token
-    Orders->>PS: POST /token, upstream_token = A
-    PS-->>Orders: Auth token B for Inventory
-    Orders->>Inventory: POST /inventory/42/reserve, signed with B
-    Inventory-->>Orders: 200
-    Orders-->>Agent: 200
+    Agent->>PS : POST /person, POST /token (as in three-party access)
+    PS-->>Agent : Auth token A for Orders
+    Agent->>Orders : POST /orders/42/fulfill, signed with A
+    Orders->>PS : POST /person for Inventory, upstream_token = A
+    PS-->>Orders : Person token for Inventory
+    Orders->>Inventory : POST /authorize
+    Inventory-->>Orders : Resource token
+    Orders->>PS : POST /token, upstream_token = A
+    PS-->>Orders : Auth token B for Inventory
+    Orders->>Inventory : POST /inventory/42/reserve, signed with B
+    Inventory-->>Orders : 200
+    Orders-->>Agent : 200
 ```
 
 ## Run it

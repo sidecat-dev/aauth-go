@@ -117,8 +117,8 @@ key. [Get started](getting-started.md) runs this mode.
 sequenceDiagram
     participant Agent
     participant Resource
-    Agent->>Resource: request, signed with the Agent token
-    Resource-->>Agent: 200
+    Agent->>Resource : request, signed with the Agent token
+    Resource-->>Agent : 200
 ```
 
 ### Three-party: the Person Server authorizes
@@ -131,15 +131,15 @@ sequenceDiagram
     participant Agent
     participant Resource
     participant PS as Person Server
-    Agent->>PS: POST /person (signed with the Agent token)
-    PS-->>Agent: Person token for this Resource
-    Agent->>Resource: POST /authorize, signed with the Person token
-    Resource-->>Agent: Resource token
-    Agent->>PS: POST /token with the Resource token and the Person token
-    Note over PS: The Person Server applies the person's consent
-    PS-->>Agent: Auth token
-    Agent->>Resource: request, signed with the Auth token
-    Resource-->>Agent: 200
+    Agent->>PS : POST /person (signed with the Agent token)
+    PS-->>Agent : Person token for this Resource
+    Agent->>Resource : POST /authorize, signed with the Person token
+    Resource-->>Agent : Resource token
+    Agent->>PS : POST /token with the Resource token and the Person token
+    Note over PS : The Person Server applies the person's consent
+    PS-->>Agent : Auth token
+    Agent->>Resource : request, signed with the Auth token
+    Resource-->>Agent : 200
 ```
 
 The agent can also call the Resource first with its Person token. The Resource
@@ -160,14 +160,14 @@ sequenceDiagram
     participant Resource
     participant PS as Person Server
     participant AS as Access Server
-    Agent->>Resource: POST /authorize, signed with the Person token
-    Resource-->>Agent: Resource token addressed to the AS
-    Agent->>PS: POST /token with the Resource token and the Person token
-    PS->>AS: POST /token, signed by the PS
-    AS-->>PS: Auth token
-    PS-->>Agent: Auth token
-    Agent->>Resource: request, signed with the Auth token
-    Resource-->>Agent: 200
+    Agent->>Resource : POST /authorize, signed with the Person token
+    Resource-->>Agent : Resource token addressed to the AS
+    Agent->>PS : POST /token with the Resource token and the Person token
+    PS->>AS : POST /token, signed by the PS
+    AS-->>PS : Auth token
+    PS-->>Agent : Auth token
+    Agent->>Resource : request, signed with the Auth token
+    Resource-->>Agent : 200
 ```
 
 [Access Server](roles/access-server.md) runs this flow.

@@ -183,16 +183,16 @@ sequenceDiagram
     participant R as Resource
     participant AS as Access Server
 
-    AP-->>A: Agent token bound to Agent key
-    A->>PS: Signed Person-token request
-    PS-->>A: Person token for R
-    A->>R: Signed authorization request + Person token
-    R-->>A: Resource token for AS
-    A->>PS: Signed Auth-token request + Resource token
-    PS->>AS: Signed federation request + Resource and Agent tokens
-    AS-->>PS: Auth token for R
-    PS-->>A: Auth token
-    A->>R: Signed protected call + Auth token
+    AP-->>A : Agent token bound to Agent key
+    A->>PS : Signed Person-token request
+    PS-->>A : Person token for R
+    A->>R : Signed authorization request + Person token
+    R-->>A : Resource token for AS
+    A->>PS : Signed Auth-token request + Resource token
+    PS->>AS : Signed federation request + Resource and Agent tokens
+    AS-->>PS : Auth token for R
+    PS-->>A : Auth token
+    A->>R : Signed protected call + Auth token
 ```
 
 Three-party authorization removes the AS exchange and has the PS issue the
@@ -216,15 +216,15 @@ sequenceDiagram
     participant PS as Person Server
     participant H as Authenticated host
     participant R as Resource
-    A->>PS: Signed proposal + Prefer: wait=0
-    PS->>PS: Retain exact bytes in host queue
-    PS-->>A: 202 requirement=approval + pending URL
-    H->>PS: List pending proposals
-    H->>PS: Approve or deny exact review
-    PS->>PS: Atomically retain Mission + Person tokens
-    A->>PS: One signed bodyless GET
-    PS-->>A: Approval or typed terminal result
-    A->>R: Continue ordinary mission-bound authorization
+    A->>PS : Signed proposal + Prefer header wait=0
+    PS->>PS : Retain exact bytes in host queue
+    PS-->>A : 202 requirement=approval + pending URL
+    H->>PS : List pending proposals
+    H->>PS : Approve or deny exact review
+    PS->>PS : Atomically retain Mission + Person tokens
+    A->>PS : One signed bodyless GET
+    PS-->>A : Approval or typed terminal result
+    A->>R : Continue ordinary mission-bound authorization
 ```
 
 `Client.ProposeMission` is the immediate-only call. `Client.BeginMission`
@@ -259,15 +259,15 @@ sequenceDiagram
     participant PS as Person Server
     participant App as Application
 
-    A->>PS: Signed POST with action, parameters, optional mission_s256
-    PS->>PS: If named, load exact active mission context
-    PS->>PS: Retain pending request against mission before 202
-    PS-->>A: 202 + same-origin pending URL
-    P->>PS: Host-authenticated grant or denial
-    PS->>PS: Atomically retain first decision
-    A->>PS: One signed bodyless GET
-    PS-->>A: Typed grant or denial; consume result
-    A->>App: Execute only after grant
+    A->>PS : Signed POST with action, parameters, optional mission_s256
+    PS->>PS : If named, load exact active mission context
+    PS->>PS : Retain pending request against mission before 202
+    PS-->>A : 202 + same-origin pending URL
+    P->>PS : Host-authenticated grant or denial
+    PS->>PS : Atomically retain first decision
+    A->>PS : One signed bodyless GET
+    PS-->>A : Typed grant or denial, result consumed
+    A->>App : Execute only after grant
 ```
 
 The Permission Endpoint governs an action that has no remote Resource. The
@@ -301,13 +301,13 @@ sequenceDiagram
     participant A as Agent
     participant PS as Person Server
     participant Log as Mission audit store
-    App->>App: Perform action inside active mission
-    App->>A: Supply post-action record
-    A->>PS: One signed POST with exact JSON
-    PS->>PS: Verify Agent and active owned mission
-    PS->>Log: Compare mission and append atomically
-    Log-->>PS: Entry retained in order
-    PS-->>A: 201 Created
+    App->>App : Perform action inside active mission
+    App->>A : Supply post-action record
+    A->>PS : One signed POST with exact JSON
+    PS->>PS : Verify Agent and active owned mission
+    PS->>Log : Compare mission and append atomically
+    Log-->>PS : Entry retained in order
+    PS-->>A : 201 Created
 ```
 
 Audit reports an action already performed; the library never performs the
@@ -325,21 +325,21 @@ sequenceDiagram
     participant PS as Person Server
     participant Host as Host policy
     participant P as Person
-    A->>PS: One signed question, optionally naming an active mission
-    PS->>PS: Verify Agent, request shape, and mission when named
-    PS->>Host: Exact mission view and untrusted Markdown question
-    Host->>P: Reach person through host-selected channel
-    P-->>Host: Answer
+    A->>PS : One signed question, optionally naming an active mission
+    PS->>PS : Verify Agent, request shape, and mission when named
+    PS->>Host : Exact mission view and untrusted Markdown question
+    Host->>P : Reach person through host-selected channel
+    P-->>Host : Answer
     alt immediate
-        Host-->>PS: Answer
-        PS->>PS: Retain mission result when mission-bound
-        PS-->>A: 200 with exact answer document
+        Host-->>PS : Answer
+        PS->>PS : Retain mission result when mission-bound
+        PS-->>A : 200 with exact answer document
     else deferred
-        PS->>PS: Retain question before 202
-        PS-->>A: 202 with same-origin pending URL
-        Host->>PS: Resume and retain answer
-        A->>PS: One signed bodyless GET
-        PS-->>A: Consume and return exact answer
+        PS->>PS : Retain question before 202
+        PS-->>A : 202 with same-origin pending URL
+        Host->>PS : Resume and retain answer
+        A->>PS : One signed bodyless GET
+        PS-->>A : Consume and return exact answer
     end
 ```
 
@@ -361,17 +361,17 @@ sequenceDiagram
     participant PS as Person Server
     participant Host as Host policy
     participant P as Person
-    R-->>A: 202 + Resource pending URL + URL/code requirement
-    A->>PS: One signed relay, optionally naming an active mission
-    PS->>PS: Verify mission when named; retain exact relay before 202
-    PS-->>A: PS relay pending URL
-    PS->>Host: Exact mission view, description, URL, and code
-    Host->>P: Present the relay through a host-selected channel
-    P-->>Host: Engage with the Resource URL
-    Host->>PS: Mark engagement
-    A->>PS: One signed bodyless GET
-    PS-->>A: Terminal interacting state
-    A->>R: Continue polling the authoritative Resource URL
+    R-->>A : 202 + Resource pending URL + URL/code requirement
+    A->>PS : One signed relay, optionally naming an active mission
+    PS->>PS : Verify mission when named, retain exact relay before 202
+    PS-->>A : PS relay pending URL
+    PS->>Host : Exact mission view, description, URL, and code
+    Host->>P : Present the relay through a host-selected channel
+    P-->>Host : Engage with the Resource URL
+    Host->>PS : Mark engagement
+    A->>PS : One signed bodyless GET
+    PS-->>A : Terminal interacting state
+    A->>R : Continue polling the authoritative Resource URL
 ```
 
 `RequestInteractionRelay` submits one `interaction` or `payment`, optionally
@@ -400,16 +400,16 @@ sequenceDiagram
     participant PS as Person Server
     participant R as Resource
 
-    A->>PS: Signed Auth-token request; interaction + clarification capabilities
-    PS-->>A: 202 interaction + pending URL
-    P->>PS: Open consent session
-    PS-->>A: Explicit poll returns 202 clarification + question
-    A->>PS: One signed clarification_response
-    PS->>PS: Retain exact answer with pending authorization
-    P->>PS: Host-authenticated approval
-    A->>PS: One explicit poll
-    PS-->>A: Auth token
-    A->>R: One protected call
+    A->>PS : Signed Auth-token request with interaction + clarification capabilities
+    PS-->>A : 202 interaction + pending URL
+    P->>PS : Open consent session
+    PS-->>A : Explicit poll returns 202 clarification + question
+    A->>PS : One signed clarification_response
+    PS->>PS : Retain exact answer with pending authorization
+    P->>PS : Host-authenticated approval
+    A->>PS : One explicit poll
+    PS-->>A : Auth token
+    A->>R : One protected call
 ```
 
 The Agent receives the question and optional choices as typed values, but the
@@ -439,16 +439,16 @@ sequenceDiagram
     participant AP as Agent Provider
     participant R as Resource
 
-    A->>AP: Application-selected enrollment POST, durable hwk proof
-    AP-->>A: Stable Agent identifier after enrollment retention
+    A->>AP : Application-selected enrollment POST, durable hwk proof
+    AP-->>A : Stable Agent identifier after enrollment retention
     alt preferred two-key profile
-        A->>AP: Refresh POST, durable jkt-jwt plus ephemeral HTTP proof
-        AP-->>A: Exact retained Agent token bound to the ephemeral key
-        A->>R: Agent-token request with ephemeral proof
+        A->>AP : Refresh POST, durable jkt-jwt plus ephemeral HTTP proof
+        AP-->>A : Exact retained Agent token bound to the ephemeral key
+        A->>R : Agent-token request with ephemeral proof
     else optional single-key profile
-        A->>AP: Refresh POST with durable hwk proof
-        AP-->>A: Exact retained Agent token bound to the durable key
-        A->>R: Agent-token request with durable proof
+        A->>AP : Refresh POST with durable hwk proof
+        AP-->>A : Exact retained Agent token bound to the durable key
+        A->>R : Agent-token request with durable proof
     end
 ```
 
@@ -473,14 +473,14 @@ sequenceDiagram
     participant PS as Person Server
     participant R as Direct Agent-identity Resource
     participant A as Agent
-    AP->>PS: Signed POST with exact Agent-token iss and jti
-    PS->>PS: Retain revocation marker
-    AP->>R: Signed POST with the same exact reference
-    R->>R: Retain revocation marker
-    A->>PS: Later signed Agent-token request
-    PS-->>A: Refused before person policy
-    A->>R: Later direct Agent-token request
-    R-->>A: Refused before application dispatch
+    AP->>PS : Signed POST with exact Agent-token iss and jti
+    PS->>PS : Retain revocation marker
+    AP->>R : Signed POST with the same exact reference
+    R->>R : Retain revocation marker
+    A->>PS : Later signed Agent-token request
+    PS-->>A : Refused before person policy
+    A->>R : Later direct Agent-token request
+    R-->>A : Refused before application dispatch
 ```
 
 Enrollment disablement or revocation stops new refreshes. Token revocation is
@@ -500,20 +500,20 @@ sequenceDiagram
     participant LR as Local Resource
     participant HPS as Hosted Person Server
     participant HR as Hosted Resource
-    A->>A: Publish ordinary AP metadata and JWKS
-    A->>A: Self-issue token naming the local PS
-    A->>PS: Signed local-action permission request
-    PS-->>A: Typed permission grant
-    A->>LR: Ordinary signed Agent-token request
-    LR->>A: Resolve AP metadata/JWKS and verify the request
-    LR-->>A: Protected response
-    A->>A: Self-issue token naming the hosted PS
-    A->>HPS: Request Person authority
-    HPS-->>A: Interaction URL and code
-    A->>HPS: Person-authenticated host approves account
-    A->>HPS: Explicit poll returns Person token
-    A->>HR: Complete ordinary three-party authorization
-    HR-->>A: Protected hosted response
+    A->>A : Publish ordinary AP metadata and JWKS
+    A->>A : Self-issue token naming the local PS
+    A->>PS : Signed local-action permission request
+    PS-->>A : Typed permission grant
+    A->>LR : Ordinary signed Agent-token request
+    LR->>A : Resolve AP metadata/JWKS and verify the request
+    LR-->>A : Protected response
+    A->>A : Self-issue token naming the hosted PS
+    A->>HPS : Request Person authority
+    HPS-->>A : Interaction URL and code
+    A->>HPS : Person-authenticated host approves account
+    A->>HPS : Explicit poll returns Person token
+    A->>HR : Complete ordinary three-party authorization
+    HR-->>A : Protected hosted response
 ```
 
 `agentprovider.NewSelfHostedAgent` fixes one HTTPS issuer, top-level Agent

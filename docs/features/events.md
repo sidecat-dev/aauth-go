@@ -28,15 +28,15 @@ sequenceDiagram
     participant Agent
     participant AP as Agent Provider
     participant Resource
-    Note over AP: IssueSubscribeToken
-    AP-->>Agent: subscribe token
-    Agent->>Resource: POST /events/subscribe, signed with the subscribe token
-    Resource-->>Agent: 200
-    Note over Resource: later: PrepareEvent, DeliverEvent
-    Resource->>AP: GET /.well-known/aauth-agent.json
-    Resource->>AP: POST /events, the payload and the event token
-    AP-->>Resource: 202
-    Note over AP,Agent: your provider hands the event on:<br/>PendingEvents, then AcceptEvent at the agent
+    Note over AP : IssueSubscribeToken
+    AP-->>Agent : subscribe token
+    Agent->>Resource : POST /events/subscribe, signed with the subscribe token
+    Resource-->>Agent : 200
+    Note over Resource : later, PrepareEvent and DeliverEvent
+    Resource->>AP : GET /.well-known/aauth-agent.json
+    Resource->>AP : POST /events, the payload and the event token
+    AP-->>Resource : 202
+    Note over AP,Agent : your provider hands the event on with<br/>PendingEvents, then AcceptEvent at the agent
 ```
 
 ## The code
