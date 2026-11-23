@@ -73,7 +73,7 @@ code, so that every build uses the same commit. To move to a later commit, run
 - [USE-IN-YOUR-SERVICE.md](USE-IN-YOUR-SERVICE.md): the full reference for
   running each role in a service.
 - [CONFORMANCE.md](CONFORMANCE.md): how the conformance suite measures the
-  library, and what its latest run says and does not say.
+  library, and what the recorded run covers.
 - [INTERPRETATIONS.md](INTERPRETATIONS.md): the choices made where a draft
   leaves room.
 - [SPECIFICATIONS.md](SPECIFICATIONS.md): the exact draft text implemented.
