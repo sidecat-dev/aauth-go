@@ -11,8 +11,9 @@ Agent:
 5. refuses a new action after the Agent token is revoked.
 
 The walkthrough is a standalone Go module. It requires the published
-`aauth-go` module without a `replace` directive and imports only public
-packages.
+`aauth-go` module at `fa8196d2b3ce`, without a `replace` directive, and imports
+only public packages. These checks exercise that published revision. The
+repository README has a separate getting-started example.
 
 ## Run it
 

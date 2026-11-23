@@ -12,8 +12,8 @@ Provider that vouches for it, the API (called a Resource), and the servers that
 speak for the person or for the API. [How AAuth works](docs/how-aauth-works.md)
 introduces them.
 
-Each server role is an `http.Handler` that you mount in your own HTTPS server,
-and each client sends its requests through the `*http.Client` you give it. Your
+Server packages expose HTTP handlers for the endpoints you mount on your HTTPS
+server. Each client sends its requests through the `*http.Client` you give it. Your
 service decides whom to trust, authenticates people and stores state; the
 packages sign, check and decide.
 
@@ -90,9 +90,12 @@ with its limits, in the guides under [docs/features](docs/features) and
 [docs/roles](docs/roles). APIs can change from one commit to the next.
 
 [aauth-rust](https://gitlab.com/sidecat-dev/aauth-rust) implements the same
-drafts in Rust. The two are tested against each other over HTTPS, in both
-directions. [INTERPRETATIONS.md](INTERPRETATIONS.md) records each choice this
-library makes where a draft leaves room.
+drafts in Rust. The interop report records HTTPS tests in both directions and
+names the exact library revisions and cases exercised.
+[Interop report](https://gitlab.com/sidecat-dev/aauth-interop/-/tree/f9ee96110e44cb54a9a77159a4c4c93a3a93cd00/reports/run-02-alpha17-0e2447b)
+
+[INTERPRETATIONS.md](INTERPRETATIONS.md) records each choice this library makes
+where a draft leaves room.
 
 ## License
 
