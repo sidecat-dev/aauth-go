@@ -19,25 +19,37 @@ packages sign, check and decide.
 
 ## Get started
 
-You need [Go](https://go.dev/dl/) 1.25 or later. In a new directory:
+Install Go 1.25 or later using the instructions for your operating system.
+Open a new terminal and use `go version` to confirm the version on your PATH.
+[Install Go](https://go.dev/doc/install)
+
+Create a project and download the example at the same revision as the library.
 
 ```sh
+mkdir hello-aauth
+cd hello-aauth
 go mod init example.com/hello-aauth
 go get gitlab.com/sidecat-dev/aauth-go@6fcdb1e
-```
-
-Then save [the getting-started program](example/gettingstarted/main.go) as
-`main.go`, and run it:
-
-```sh
+curl -fsSL -o main.go \
+  https://gitlab.com/sidecat-dev/aauth-go/-/raw/6fcdb1ef51b06993881e47849ba5b53597abea75/example/gettingstarted/main.go
 go mod tidy
 go run .
 ```
 
-It starts an Agent Provider and an API on loopback ports, with TLS, and has an
-agent call the API. [Get started](docs/getting-started.md) walks through the
-output and the code. In a clone of this repository, `go run ./example/gettingstarted`
-runs the same program.
+You can also [open the program in your browser](https://gitlab.com/sidecat-dev/aauth-go/-/raw/6fcdb1ef51b06993881e47849ba5b53597abea75/example/gettingstarted/main.go)
+and save it as `main.go` in the project directory before running `go mod tidy`.
+
+The program starts an Agent Provider and an API on loopback ports, with TLS.
+It makes three requests and prints the results.
+
+```text
+unsigned: 401 requirement=agent-token
+signed: 200 hello, aauth:assistant@ap.example
+not admitted: 403
+```
+
+In a clone of this repository, `go run ./example/gettingstarted` runs the same
+example. [Get started](docs/getting-started.md) walks through the code and output.
 
 ## Install
 
