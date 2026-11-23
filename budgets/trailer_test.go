@@ -76,7 +76,43 @@ func TestReservedHeaderOmitsCostAndTrailerCarriesOnlyCost(t *testing.T) {
 			t.Fatalf("trailer %s was accepted", raw)
 		}
 	}
-	if _, err := ParseFeedback([]string{`remaining=1, cost=1, reserved=1`}); err == nil {
-		t.Fatal("header carrying cost and reserved was accepted")
+}
+
+func TestParseFeedbackWithMergedCostTrailer(t *testing.T) {
+	t.Parallel()
+
+	unit, _ := NewUnit("USD", 6)
+	grant, _ := NewValue(2_000_000, unit)
+	const header = `remaining=1568800, reserved=431200, unit="USD", decimals=6`
+	const trailer = `cost=221200`
+	for _, fields := range [][]string{
+		{header + ", " + trailer},
+		{header, trailer},
+	} {
+		feedback, err := ParseFeedback(fields)
+		if err != nil {
+			t.Fatalf("parse merged feedback %q: %v", fields, err)
+		}
+		if err := ValidateFeedback(grant, feedback); err != nil {
+			t.Fatal(err)
+		}
+		if cost, ok := feedback.Cost(); !ok || cost != 221_200 {
+			t.Fatalf("cost = %d, %t", cost, ok)
+		}
+		if reserved, ok := feedback.Reserved(); !ok || reserved != 431_200 {
+			t.Fatalf("reserved = %d, %t", reserved, ok)
+		}
+		if balance, err := SettledRemaining(feedback); err != nil || balance != 1_778_800 {
+			t.Fatalf("settled remaining = %d, %v", balance, err)
+		}
+		if _, err := FormatFeedback(feedback); err == nil {
+			t.Fatal("emitted cost and reserved together in an original header")
+		}
+		if _, err := ApplyTrailer(feedback, []string{trailer}); err == nil {
+			t.Fatal("accepted trailer that restates cost")
+		}
+	}
+	if _, err := ParseFeedback([]string{header, `cost=431201`}); err == nil {
+		t.Fatal("accepted merged cost above the reservation")
 	}
 }

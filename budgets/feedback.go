@@ -153,7 +153,8 @@ func (feedback Feedback) Unit() (Unit, bool) {
 }
 
 // ParseFeedback parses one or more AAuth-Budget field lines as an RFC 9651
-// Dictionary. Unknown members are ignored.
+// Dictionary. It accepts cost alongside reserved when a recipient has merged
+// trailer fields into the headers. Unknown members are ignored.
 func ParseFeedback(values []string) (Feedback, error) {
 	dictionary, err := unmarshalBudgetDictionary(values)
 	if err != nil {
@@ -182,9 +183,6 @@ func ParseFeedback(values []string) (Feedback, error) {
 	} else if ok {
 		feedback.required = &required
 	}
-	if feedback.cost != nil && feedback.reserved != nil {
-		return Feedback{}, errors.New("budgets: AAuth-Budget header must not carry both cost and reserved")
-	}
 
 	unitName, unitPresent, err := feedbackString(dictionary, "unit")
 	if err != nil {
@@ -210,7 +208,8 @@ func ParseFeedback(values []string) (Feedback, error) {
 	return feedback, nil
 }
 
-// FormatFeedback emits the canonical RFC 9651 Dictionary form.
+// FormatFeedback emits an original response header as an RFC 9651 Dictionary.
+// A streamed response sends its later cost separately with FormatTrailer.
 func FormatFeedback(feedback Feedback) (string, error) {
 	if err := feedback.validate(); err != nil {
 		return "", err

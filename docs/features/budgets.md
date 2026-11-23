@@ -129,6 +129,10 @@ has no `AAuth-Budget` header, `BeginBudgetCall` returns a
 - `BudgetConfig.Maximum` holds back an upper bound before the call, and
   `resource.SettleBudget` in your handler charges the actual, lower cost. The
   `Store` must then also implement `resource.BudgetReserver`.
+- For streamed feedback, the resource sends the reservation in the header and
+  may report the final cost in a trailer. The parser also accepts both in one
+  dictionary when the HTTP transport merges the trailer, provided the cost
+  fits the reservation.
 - With an Access Server, the Person Server sends a ceiling with the request
   and the Access Server grants within it
   (`personserver.FederatedBudgetConfig`).
