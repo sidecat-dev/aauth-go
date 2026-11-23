@@ -12,32 +12,44 @@ Provider that vouches for it, the API (called a Resource), and the servers that
 speak for the person or for the API. [How AAuth works](docs/how-aauth-works.md)
 introduces them.
 
-Each server role is an `http.Handler` that you mount in your own HTTPS server,
-and each client sends its requests through the `*http.Client` you give it. Your
+Server packages expose HTTP handlers for the endpoints you mount on your HTTPS
+server. Each client sends its requests through the `*http.Client` you give it. Your
 service decides whom to trust, authenticates people and stores state; the
 packages sign, check and decide.
 
 ## Get started
 
-You need [Go](https://go.dev/dl/) 1.25 or later. In a new directory:
+Install Go 1.25 or later using the instructions for your operating system.
+Open a new terminal and use `go version` to confirm the version on your PATH.
+[Install Go](https://go.dev/doc/install)
+
+Create a project and download the example at the same revision as the library.
 
 ```sh
+mkdir hello-aauth
+cd hello-aauth
 go mod init example.com/hello-aauth
 go get gitlab.com/sidecat-dev/aauth-go@6fcdb1e
-```
-
-Then save [the getting-started program](example/gettingstarted/main.go) as
-`main.go`, and run it:
-
-```sh
+curl -fsSL -o main.go \
+  https://gitlab.com/sidecat-dev/aauth-go/-/raw/6fcdb1ef51b06993881e47849ba5b53597abea75/example/gettingstarted/main.go
 go mod tidy
 go run .
 ```
 
-It starts an Agent Provider and an API on loopback ports, with TLS, and has an
-agent call the API. [Get started](docs/getting-started.md) walks through the
-output and the code. In a clone of this repository, `go run ./example/gettingstarted`
-runs the same program.
+You can also [open the program in your browser](https://gitlab.com/sidecat-dev/aauth-go/-/raw/6fcdb1ef51b06993881e47849ba5b53597abea75/example/gettingstarted/main.go)
+and save it as `main.go` in the project directory before running `go mod tidy`.
+
+The program starts an Agent Provider and an API on loopback ports, with TLS.
+It makes three requests and prints the results.
+
+```text
+unsigned: 401 requirement=agent-token
+signed: 200 hello, aauth:assistant@ap.example
+not admitted: 403
+```
+
+In a clone of this repository, `go run ./example/gettingstarted` runs the same
+example. [Get started](docs/getting-started.md) walks through the code and output.
 
 ## Install
 
@@ -73,7 +85,7 @@ code, so that every build uses the same commit. To move to a later commit, run
 - [USE-IN-YOUR-SERVICE.md](USE-IN-YOUR-SERVICE.md): the full reference for
   running each role in a service.
 - [CONFORMANCE.md](CONFORMANCE.md): how the conformance suite measures the
-  library, and what its latest run says and does not say.
+  library, and what the recorded run covers.
 - [INTERPRETATIONS.md](INTERPRETATIONS.md): the choices made where a draft
   leaves room.
 - [SPECIFICATIONS.md](SPECIFICATIONS.md): the exact draft text implemented.
@@ -90,9 +102,12 @@ with its limits, in the guides under [docs/features](docs/features) and
 [docs/roles](docs/roles). APIs can change from one commit to the next.
 
 [aauth-rust](https://gitlab.com/sidecat-dev/aauth-rust) implements the same
-drafts in Rust. The two are tested against each other over HTTPS, in both
-directions. [INTERPRETATIONS.md](INTERPRETATIONS.md) records each choice this
-library makes where a draft leaves room.
+drafts in Rust. The interop report records HTTPS tests in both directions and
+names the exact library revisions and cases exercised.
+[Interop report](https://gitlab.com/sidecat-dev/aauth-interop/-/tree/f9ee96110e44cb54a9a77159a4c4c93a3a93cd00/reports/run-02-alpha17-0e2447b)
+
+[INTERPRETATIONS.md](INTERPRETATIONS.md) records each choice this library makes
+where a draft leaves room.
 
 ## License
 
